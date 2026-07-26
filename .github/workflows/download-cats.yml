@@ -3,8 +3,8 @@ name: Download cats to R2
 on:
   workflow_dispatch:
   schedule:
-    # Every 10 minutes, deliberately away from the top of the hour.
-    - cron: "3,13,23,33,43,53 * * * *"
+    # Every 15 minutes, deliberately away from the top of the hour.
+    - cron: "3,18,33,48 * * * *"
 
 permissions:
   contents: read
@@ -21,6 +21,63 @@ jobs:
     steps:
       - name: Get the project files
         uses: actions/checkout@v4
+
+      - name: Remember GitHub runner public IP
+        shell: bash
+        run: |
+          set -euo pipefail
+          BEFORE_IP="$(curl -4 --fail --silent --show-error --max-time 20 https://api.ipify.org)"
+          echo "GitHub runner public IP before Tailscale: ${BEFORE_IP}"
+          echo "BEFORE_TAILSCALE_IP=${BEFORE_IP}" >> "$GITHUB_ENV"
+
+      - name: Join private Tailscale network
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:github-actions
+
+      - name: Force all traffic through the Flint 2
+        shell: bash
+        env:
+          TS_EXIT_NODE_IP: ${{ secrets.TS_EXIT_NODE_IP }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${TS_EXIT_NODE_IP:-}" ]; then
+            echo "TS_EXIT_NODE_IP is missing."
+            exit 1
+          fi
+
+          echo "Selecting the Flint 2 exit node..."
+          sudo tailscale set --exit-node="${TS_EXIT_NODE_IP}" --exit-node-allow-lan-access=false
+
+          echo "Waiting for the exit-node route to become active..."
+          AFTER_IP=""
+          for attempt in $(seq 1 12); do
+            sleep 3
+            AFTER_IP="$(curl -4 --fail --silent --show-error --max-time 20 https://api.ipify.org || true)"
+            if [ -n "$AFTER_IP" ] && [ "$AFTER_IP" != "$BEFORE_TAILSCALE_IP" ]; then
+              break
+            fi
+            echo "Attempt ${attempt}: exit-node IP has not changed yet."
+          done
+
+          echo "GitHub runner public IP before Tailscale: ${BEFORE_TAILSCALE_IP}"
+          echo "Public IP after selecting the Flint 2: ${AFTER_IP:-<none>}"
+          tailscale status
+
+          if [ -z "$AFTER_IP" ]; then
+            echo "Could not determine the routed public IP. Refusing to contact Reddit."
+            exit 1
+          fi
+
+          if [ "$AFTER_IP" = "$BEFORE_TAILSCALE_IP" ]; then
+            echo "The public IP did not change. Refusing to contact Reddit through GitHub's IP."
+            exit 1
+          fi
+
+          echo "Exit-node routing is active. Reddit and R2 traffic will use the Flint 2/home connection."
 
       - name: Set up Python
         uses: actions/setup-python@v5

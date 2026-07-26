@@ -17,7 +17,7 @@ import boto3
 from botocore.client import Config
 from botocore.exceptions import ClientError
 
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.2.1"
 BASE_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = Path(os.getenv("SETTINGS_PATH", BASE_DIR / "settings.json"))
 DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / ".run-data"))
@@ -25,7 +25,7 @@ ARCHIVE_PATH = DATA_DIR / "gallery-dl-archive.sqlite3"
 CONFIG_PATH = DATA_DIR / "gallery-dl.generated.json"
 COOKIES_PATH = DATA_DIR / "reddit-cookies.txt"
 INDEX_KEY = os.getenv("R2_INDEX_KEY", "gallery-index.json")
-ARCHIVE_R2_KEY = os.getenv("R2_ARCHIVE_KEY", "_internal/gallery-dl-archive.sqlite3")
+ARCHIVE_R2_KEY = os.getenv("R2_ARCHIVE_KEY", "_internal/gallery-dl-archive-v0.2.1.sqlite3")
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -196,7 +196,7 @@ def object_key(prefix: str, file_path: Path, relative_path: str) -> str:
     return f"{prefix.strip('/')}/{fingerprint}_{safe_name(file_path)}"
 
 
-def run_gallery_dl(source: str, destination: Path) -> bool:
+def run_gallery_dl(source: str, destination: Path) -> int:
     command = [
         "gallery-dl",
         "--config",
@@ -208,69 +208,102 @@ def run_gallery_dl(source: str, destination: Path) -> bool:
     log.info("Scanning source: %s", source)
     result = subprocess.run(command, text=True, check=False)
     if result.returncode != 0:
-        log.error("gallery-dl exited with code %s for %s", result.returncode, source)
-        return False
-    return True
+        log.warning(
+            "gallery-dl finished with code %s for %s. "
+            "This can mean a partial failure; any files that did download will still be uploaded.",
+            result.returncode,
+            source,
+        )
+    return result.returncode
 
 
-def upload_downloads(settings: dict[str, Any], scan_root: Path, client, bucket: str) -> int:
+def upload_downloads(settings: dict[str, Any], scan_root: Path, client, bucket: str) -> tuple[int, int]:
     allowed = {str(ext).lower().lstrip(".") for ext in settings["allowed_extensions"]}
     maximum_bytes = int(settings.get("maximum_file_size_mb", 500)) * 1024 * 1024
     prefix = str(settings.get("r2_gallery_prefix", "gallery/"))
     index_items = read_index(client, bucket)
     indexed_keys = {item.get("key") for item in index_items if isinstance(item, dict)}
     uploaded = 0
+    discovered = 0
 
-    for file_path in scan_root.rglob("*"):
+    for file_path in list(scan_root.rglob("*")):
         if not file_path.is_file():
             continue
+        discovered += 1
         extension = file_path.suffix.lower().lstrip(".")
-        if extension not in allowed:
-            log.info("Discarding unwanted extension: %s", file_path.name)
-            continue
-        size = file_path.stat().st_size
-        if size <= 0 or size > maximum_bytes:
-            log.info("Discarding file outside size limit: %s (%s bytes)", file_path.name, size)
-            continue
+        try:
+            if extension not in allowed:
+                log.info("Discarding unwanted extension: %s", file_path.name)
+                continue
+            size = file_path.stat().st_size
+            if size <= 0 or size > maximum_bytes:
+                log.info("Discarding file outside size limit: %s (%s bytes)", file_path.name, size)
+                continue
 
-        relative = file_path.relative_to(scan_root).as_posix()
-        key = object_key(prefix, file_path, relative)
-        if key in indexed_keys:
-            log.info("Already present in R2 index; skipping: %s", file_path.name)
-            continue
+            relative = file_path.relative_to(scan_root).as_posix()
+            key = object_key(prefix, file_path, relative)
+            if key in indexed_keys:
+                log.info("Already present in R2 index; skipping: %s", file_path.name)
+                continue
 
-        content_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
-        client.upload_file(
-            str(file_path),
-            bucket,
-            key,
-            ExtraArgs={"ContentType": content_type, "CacheControl": "public, max-age=31536000, immutable"},
-        )
-        index_items.append({"key": key, "ext": extension, "size": size})
-        indexed_keys.add(key)
-        uploaded += 1
-        log.info("Uploaded %s -> r2://%s/%s", file_path.name, bucket, key)
+            content_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+            client.upload_file(
+                str(file_path),
+                bucket,
+                key,
+                ExtraArgs={"ContentType": content_type, "CacheControl": "public, max-age=31536000, immutable"},
+            )
+            index_items.append({"key": key, "ext": extension, "size": size})
+            indexed_keys.add(key)
+            uploaded += 1
+            log.info("Uploaded %s -> r2://%s/%s", file_path.name, bucket, key)
+        finally:
+            # Keep GitHub's small temporary disk from filling between source scans.
+            try:
+                file_path.unlink(missing_ok=True)
+            except OSError:
+                log.warning("Could not remove temporary file: %s", file_path)
 
     if uploaded:
         write_index(client, bucket, index_items)
         log.info("Updated %s with %s total media items", INDEX_KEY, len(index_items))
     else:
-        log.info("No new media files needed uploading")
-    return uploaded
+        log.info("No new media files needed uploading in this batch")
+    return uploaded, discovered
 
 
 def scan_once(settings: dict[str, Any], client, bucket: str) -> None:
+    total_uploaded = 0
+    total_discovered = 0
+    clean_successes = 0
+
     with tempfile.TemporaryDirectory(prefix="gooning-party-") as tmp:
         scan_root = Path(tmp)
-        success_count = 0
-        for source in settings["sources"]:
-            if run_gallery_dl(str(source), scan_root):
-                success_count += 1
-        if not success_count:
-            raise RuntimeError("All configured source scans failed")
-        uploaded = upload_downloads(settings, scan_root, client, bucket)
-        log.info("Scan complete: %s new file(s) uploaded", uploaded)
+        for number, source in enumerate(settings["sources"], start=1):
+            source_root = scan_root / f"source-{number}"
+            source_root.mkdir(parents=True, exist_ok=True)
 
+            return_code = run_gallery_dl(str(source), source_root)
+            uploaded, discovered = upload_downloads(settings, source_root, client, bucket)
+            total_uploaded += uploaded
+            total_discovered += discovered
+            if return_code == 0:
+                clean_successes += 1
+
+            # Persist history only after this source's downloaded files were safely handled.
+            save_archive(client, bucket)
+
+            if return_code != 0 and discovered == 0:
+                log.warning("Source produced no usable downloaded files: %s", source)
+
+    if clean_successes == 0 and total_discovered == 0:
+        raise RuntimeError("All configured source scans failed before downloading any files")
+
+    log.info(
+        "Scan complete: %s downloaded file(s) examined and %s new file(s) uploaded",
+        total_discovered,
+        total_uploaded,
+    )
 
 def main() -> int:
     log.info("Starting Gooning Party Fresh v%s in one-run GitHub Actions mode", APP_VERSION)

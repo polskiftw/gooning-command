@@ -1,0 +1,21 @@
+GOONING PARTY FRESH v0.2.1
+==========================
+
+This fixes the first-run data-loss bug in v0.2.1.
+
+WHAT WAS WRONG
+--------------
+gallery-dl can return a nonzero status when only part of a scan fails. v0.2.1
+incorrectly treated that as total failure, skipped all media uploads, and saved only
+the gallery-dl history database.
+
+WHAT CHANGED
+------------
+- Files are uploaded after each subreddit scan.
+- Partial gallery-dl failures no longer discard successfully downloaded files.
+- Temporary files are deleted after each upload batch.
+- Download history is saved after each source is safely handled.
+- A fresh v0.2.1 history key is used so media lost by v0.2.1 is downloaded again.
+
+You do not need to delete the old 544 KB internal history object. It will simply no
+longer be used by this version.

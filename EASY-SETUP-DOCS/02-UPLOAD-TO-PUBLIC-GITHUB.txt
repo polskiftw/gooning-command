@@ -1,0 +1,65 @@
+DGD 02 — UPLOAD TO A PUBLIC GITHUB REPOSITORY
+=============================================
+
+PART A — MAKE SURE THE REPOSITORY IS PUBLIC
+-------------------------------------------
+If you are creating a new repository:
+1. Go to GitHub.
+2. Click New repository.
+3. Give it any name you want.
+4. Select Public.
+5. Create repository.
+
+If your repository already exists and is private:
+1. Open it.
+2. Click Settings near the top.
+3. Scroll to Danger Zone.
+4. Find Change repository visibility.
+5. Change it to Public.
+
+PART B — OPEN THE UPLOAD PAGE
+-----------------------------
+On an empty repository, find the blue Quick setup box.
+Click the blue words:
+
+  uploading an existing file
+
+If the repository already has files:
+1. Click the Code tab.
+2. Click Add file.
+3. Click Upload files.
+
+PART C — WHAT TO UPLOAD
+-----------------------
+Open the extracted project folder on your PC.
+Upload the CONTENTS inside it, not the ZIP itself.
+
+You must upload all of these:
+
+  .github
+  EASY-SETUP-DOCS
+  tools
+  worker
+  app.py
+  requirements.txt
+  settings.json
+  README-FIRST.txt
+  PROJECT-SUMMARY.txt
+
+The .github folder is extremely important. It contains the automatic schedule.
+
+Do NOT upload any of these private files:
+
+  REDDIT_COOKIES_BASE64.txt
+  reddit-cookies.txt
+  mycookies.txt
+  any worksheet containing real R2 keys
+
+PART D — FINISH
+---------------
+1. Wait until GitHub finishes listing the uploaded files.
+2. Scroll to the bottom.
+3. Leave the commit message alone.
+4. Click Commit changes.
+5. Return to the repository's main Code page.
+6. Confirm that you can see app.py, settings.json, worker, and .github.

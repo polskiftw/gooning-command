@@ -1,0 +1,49 @@
+DGD 07 — CHANGE THINGS LATER
+============================
+
+CHANGE SUBREDDITS
+-----------------
+1. Open the public GitHub repository.
+2. Open settings.json.
+3. Click the pencil icon.
+4. Change only the subreddit names in the three URLs.
+5. Click Commit changes.
+
+You do not redeploy anything else.
+The next Action run uses the new settings.
+
+CHANGE MAXIMUM FILE SIZE
+------------------------
+In settings.json, change:
+
+  "maximum_file_size_mb": 500
+
+CHANGE FILE EXTENSIONS
+----------------------
+The accepted upload extensions are in settings.json.
+The visible website-filter extensions are near the top of worker/worker.js.
+Normally leave both lists alone.
+
+CHANGE THE TEN-MINUTE SCHEDULE
+------------------------------
+Open:
+
+.github/workflows/download-cats.yml
+
+Find:
+
+  - cron: "3,13,23,33,43,53 * * * *"
+
+Leave it alone unless you specifically decide to change the schedule.
+
+REFRESH REDDIT COOKIES
+----------------------
+If Reddit authentication later stops working:
+1. Make a fresh Base64 cookie value.
+2. GitHub repository > Settings > Secrets and variables > Actions.
+3. Click REDDIT_COOKIES_BASE64.
+4. Click Update secret.
+5. Paste the new single-line value.
+6. Save it.
+
+Never commit the cookie value to the public repository.

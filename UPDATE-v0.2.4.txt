@@ -1,0 +1,14 @@
+GOONING PARTY FRESH v0.2.4
+==========================
+
+Added optional home-IP routing for GitHub Actions through a Flint 2 Tailscale exit node.
+
+Changes:
+- Uses tailscale/github-action@v4.
+- Selects the Flint 2 using TS_EXIT_NODE_IP.
+- Captures GitHub's public IP before routing.
+- Refuses to run the downloader unless the public IP changes after exit-node selection.
+- Sends Reddit downloads and R2 uploads through the home connection.
+- Adds DGD 12 with exact Tailscale and GitHub-secret setup steps.
+
+No app.py, settings.json, Worker, R2, or Reddit-cookie changes are required from v0.2.3.

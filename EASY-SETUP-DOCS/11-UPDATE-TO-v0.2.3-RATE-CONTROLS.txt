@@ -1,0 +1,78 @@
+UPDATE YOUR GITHUB REPOSITORY TO v0.2.3
+=======================================
+
+YOU ONLY REPLACE THREE FILES
+----------------------------
+
+1. app.py
+2. settings.json
+3. .github/workflows/download-cats.yml
+
+Do not touch your secrets.
+Do not replace worker/worker.js.
+Do not delete anything from R2.
+
+PART 1 — REPLACE app.py
+-----------------------
+
+1. Open your GitHub repository.
+2. Click app.py.
+3. Click the pencil/edit button.
+4. Delete everything in the editor.
+5. Open the new v0.2.3 app.py on your computer.
+6. Copy all of it.
+7. Paste it into GitHub.
+8. Click Commit changes.
+
+PART 2 — REPLACE settings.json
+------------------------------
+
+1. Go back to the Code tab.
+2. Click settings.json.
+3. Click the pencil/edit button.
+4. Replace its contents with the new settings.json.
+5. IMPORTANT: put your three real subreddit names back in.
+6. Click Commit changes.
+
+The new easy knobs are:
+
+"posts_per_subreddit_per_scan": 50
+    Check at most the newest 50 posts from each subreddit per run.
+
+"reddit_request_delay_min_seconds": 2
+"reddit_request_delay_max_seconds": 4
+    Wait a random 2 to 4 seconds between Reddit/page requests.
+
+"stop_after_consecutive_archived_posts": 15
+    Stop scanning that source after 15 files in a row are already in history.
+
+"reddit_429_backoff_seconds": 60
+    If Reddit says "Too Many Requests," wait 60 seconds before retrying.
+
+Leave those defaults alone unless you later have a reason to change them.
+
+PART 3 — REPLACE THE WORKFLOW FILE
+----------------------------------
+
+1. Go back to the Code tab.
+2. Open .github.
+3. Open workflows.
+4. Open download-cats.yml.
+5. Click the pencil/edit button.
+6. Replace its contents with the new v0.2.3 file.
+7. Click Commit changes.
+
+This changes the automatic schedule to every 15 minutes:
+
+:03, :18, :33, and :48 each hour.
+
+PART 4 — RUN IT
+---------------
+
+1. Click Actions.
+2. Click Download cats to R2.
+3. Click Run workflow.
+4. Leave main selected.
+5. Click the green Run workflow button.
+
+You are done.

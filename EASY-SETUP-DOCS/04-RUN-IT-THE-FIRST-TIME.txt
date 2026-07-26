@@ -1,0 +1,44 @@
+DGD 04 — RUN IT THE FIRST TIME
+==============================
+
+1. Open your GitHub repository.
+2. Click the Actions tab near the top.
+3. If GitHub shows a message about workflows in a new public repository,
+   click the button that enables or understands the workflows.
+4. In the left side, click:
+
+   Download cats to R2
+
+5. On the right, click Run workflow.
+6. Leave the branch set to main.
+7. Click the green Run workflow button.
+8. Wait a few seconds.
+9. Refresh the page.
+10. A new workflow run appears.
+11. Click it.
+12. Click the download job.
+
+WHAT SUCCESS LOOKS LIKE
+-----------------------
+The job eventually gets a green check mark.
+The log should mention things like:
+
+- Restored prior download history
+  OR
+- No prior download history exists yet
+
+- Scanning source
+- Uploaded
+- Updated gallery-index.json
+- Saved download history to R2
+
+The first run can take longer because it installs everything and may find a backlog.
+
+AUTOMATIC RUNS
+--------------
+After the first manual run, GitHub Actions automatically runs at:
+
+3, 13, 23, 33, 43, and 53 minutes past every hour.
+
+That is every ten minutes.
+Scheduled runs can sometimes begin a little late. That is normal.

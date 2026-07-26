@@ -1,0 +1,29 @@
+WHAT THIS PROJECT DOES
+======================
+
+Every ten minutes, GitHub Actions wakes up and runs app.py.
+
+app.py:
+1. restores gallery-dl's prior download history from R2
+2. reads your three subreddit URLs from settings.json
+3. uses gallery-dl + your Reddit cookies to download new media
+4. keeps only allowed file extensions and sizes
+5. uploads accepted files into the gallery/ area of your R2 bucket
+6. updates gallery-index.json
+7. saves download history back into R2
+8. stops
+
+The Cloudflare Worker serves gooning.party and shows one random item.
+
+The page has only:
+- one random image/GIF/video
+- Next random button
+- extension filter
+- Space = next random
+- F = browser fullscreen
+- click media = fit/native-size toggle
+- hidden video controls
+- looping GIFs/videos
+
+There is no website upload, back button, slideshow timer, speed control, A hotkey,
+or image-content duplicate checker.

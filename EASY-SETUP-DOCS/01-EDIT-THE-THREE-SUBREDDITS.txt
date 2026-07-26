@@ -1,0 +1,28 @@
+DGD 01 — EDIT THE THREE SUBREDDITS
+==================================
+
+1. Open the main project folder.
+2. Open settings.json in Notepad.
+3. Find this section:
+
+  "sources": [
+    "https://www.reddit.com/r/CHANGE_THIS_SUBREDDIT_1/new/",
+    "https://www.reddit.com/r/CHANGE_THIS_SUBREDDIT_2/new/",
+    "https://www.reddit.com/r/CHANGE_THIS_SUBREDDIT_3/new/"
+  ],
+
+4. Replace ONLY the three CHANGE_THIS_SUBREDDIT names.
+
+Example:
+
+  "sources": [
+    "https://www.reddit.com/r/cats/new/",
+    "https://www.reddit.com/r/OneOrangeBraincell/new/",
+    "https://www.reddit.com/r/CatsStandingUp/new/"
+  ],
+
+5. Keep the quotation marks, commas, brackets, /r/, and /new/ exactly where they are.
+6. Save the file.
+7. Close Notepad.
+
+Do not put Reddit cookies or Cloudflare keys in settings.json.

@@ -1,0 +1,300 @@
+from __future__ import annotations
+
+import base64
+import binascii
+import hashlib
+import json
+import logging
+import mimetypes
+import os
+import subprocess
+import tempfile
+import time
+from pathlib import Path
+from typing import Any
+
+import boto3
+from botocore.client import Config
+from botocore.exceptions import ClientError
+
+APP_VERSION = "0.2.0"
+BASE_DIR = Path(__file__).resolve().parent
+SETTINGS_PATH = Path(os.getenv("SETTINGS_PATH", BASE_DIR / "settings.json"))
+DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / ".run-data"))
+ARCHIVE_PATH = DATA_DIR / "gallery-dl-archive.sqlite3"
+CONFIG_PATH = DATA_DIR / "gallery-dl.generated.json"
+COOKIES_PATH = DATA_DIR / "reddit-cookies.txt"
+INDEX_KEY = os.getenv("R2_INDEX_KEY", "gallery-index.json")
+ARCHIVE_R2_KEY = os.getenv("R2_ARCHIVE_KEY", "_internal/gallery-dl-archive.sqlite3")
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s | %(levelname)s | %(message)s",
+)
+log = logging.getLogger("gooning-party")
+
+
+def required_env(name: str) -> str:
+    value = os.getenv(name, "").strip()
+    if not value:
+        raise RuntimeError(f"Missing required GitHub Actions secret/environment variable: {name}")
+    return value
+
+
+def load_settings() -> dict[str, Any]:
+    with SETTINGS_PATH.open("r", encoding="utf-8") as handle:
+        settings = json.load(handle)
+    sources = settings.get("sources")
+    if not isinstance(sources, list) or not sources:
+        raise RuntimeError("settings.json must contain at least one source URL")
+    placeholders = [source for source in sources if "CHANGE_THIS_SUBREDDIT" in str(source)]
+    if placeholders:
+        raise RuntimeError(
+            "You still have CHANGE_THIS_SUBREDDIT placeholders in settings.json. "
+            "Replace all three with real subreddit names first."
+        )
+    return settings
+
+
+def r2_client():
+    account_id = required_env("R2_ACCOUNT_ID")
+    return boto3.client(
+        "s3",
+        endpoint_url=f"https://{account_id}.r2.cloudflarestorage.com",
+        aws_access_key_id=required_env("R2_ACCESS_KEY_ID"),
+        aws_secret_access_key=required_env("R2_SECRET_ACCESS_KEY"),
+        region_name="auto",
+        config=Config(signature_version="s3v4", retries={"max_attempts": 5, "mode": "standard"}),
+    )
+
+
+def write_reddit_cookies() -> None:
+    encoded = required_env("REDDIT_COOKIES_BASE64")
+    try:
+        cookie_bytes = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise RuntimeError(
+            "REDDIT_COOKIES_BASE64 is invalid. Paste the entire one-line Base64 value, "
+            "with no quotation marks and no missing characters."
+        ) from exc
+
+    text = cookie_bytes.decode("utf-8-sig", errors="strict")
+    if "reddit.com" not in text.lower():
+        raise RuntimeError("The decoded cookie file does not appear to contain Reddit cookies.")
+    if not text.lstrip().startswith(("# Netscape HTTP Cookie File", "# HTTP Cookie File")):
+        raise RuntimeError("The decoded cookie file is not Netscape cookies.txt format.")
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    COOKIES_PATH.write_text(text, encoding="utf-8")
+    try:
+        COOKIES_PATH.chmod(0o600)
+    except OSError:
+        pass
+    log.info("Prepared Reddit browser cookies (no OAuth app or developer API credentials)")
+
+
+def restore_archive(client, bucket: str) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        client.download_file(bucket, ARCHIVE_R2_KEY, str(ARCHIVE_PATH))
+        log.info("Restored prior download history from R2")
+    except ClientError as exc:
+        code = str(exc.response.get("Error", {}).get("Code", ""))
+        if code in {"NoSuchKey", "404", "NotFound"}:
+            log.info("No prior download history exists yet; this is normal on the first run")
+            return
+        raise
+
+
+def save_archive(client, bucket: str) -> None:
+    if not ARCHIVE_PATH.exists() or ARCHIVE_PATH.stat().st_size == 0:
+        log.warning("No download-history file was produced, so there is nothing to save")
+        return
+    client.upload_file(
+        str(ARCHIVE_PATH),
+        bucket,
+        ARCHIVE_R2_KEY,
+        ExtraArgs={"ContentType": "application/x-sqlite3", "CacheControl": "no-store"},
+    )
+    log.info("Saved download history to R2 for the next GitHub Actions run")
+
+
+def build_gallery_dl_config(settings: dict[str, Any]) -> None:
+    write_reddit_cookies()
+    config = {
+        "extractor": {
+            "base-directory": "/tmp/gooning-party-downloads",
+            "archive": str(ARCHIVE_PATH),
+            "retries": int(settings.get("download_retries", 4)),
+            "timeout": int(settings.get("download_timeout_seconds", 45)),
+            "cookies": str(COOKIES_PATH),
+            "cookies-update": str(COOKIES_PATH),
+            "reddit": {
+                "api": "rest",
+                "cookies": str(COOKIES_PATH),
+                "videos": True,
+            },
+            "ytdl": {"enabled": True},
+        },
+        "downloader": {
+            "part-directory": "/tmp/gooning-party-parts",
+            "ytdl": {
+                "format": "bestvideo*+bestaudio/best",
+                "forward-cookies": True,
+            },
+        },
+    }
+    CONFIG_PATH.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    log.info("Generated gallery-dl configuration")
+
+
+def read_index(client, bucket: str) -> list[dict[str, Any]]:
+    try:
+        response = client.get_object(Bucket=bucket, Key=INDEX_KEY)
+        payload = json.loads(response["Body"].read().decode("utf-8"))
+        if isinstance(payload, dict) and isinstance(payload.get("items"), list):
+            return payload["items"]
+        if isinstance(payload, list):
+            return payload
+    except ClientError as exc:
+        code = str(exc.response.get("Error", {}).get("Code", ""))
+        if code not in {"NoSuchKey", "404", "NotFound"}:
+            raise
+    return []
+
+
+def write_index(client, bucket: str, items: list[dict[str, Any]]) -> None:
+    payload = {
+        "version": 1,
+        "generated_at": int(time.time()),
+        "count": len(items),
+        "items": items,
+    }
+    client.put_object(
+        Bucket=bucket,
+        Key=INDEX_KEY,
+        Body=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+        ContentType="application/json",
+        CacheControl="no-cache",
+    )
+
+
+def safe_name(path: Path) -> str:
+    clean = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in path.name)
+    return clean[-160:] or "media.bin"
+
+
+def object_key(prefix: str, file_path: Path, relative_path: str) -> str:
+    # Stable for the same downloaded file/path. It is not an image-content duplicate checker.
+    digest = hashlib.sha1()
+    digest.update(relative_path.encode("utf-8", errors="replace"))
+    digest.update(b"\0")
+    with file_path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    fingerprint = digest.hexdigest()[:20]
+    return f"{prefix.strip('/')}/{fingerprint}_{safe_name(file_path)}"
+
+
+def run_gallery_dl(source: str, destination: Path) -> bool:
+    command = [
+        "gallery-dl",
+        "--config",
+        str(CONFIG_PATH),
+        "-o",
+        f"extractor.base-directory={destination}",
+        source,
+    ]
+    log.info("Scanning source: %s", source)
+    result = subprocess.run(command, text=True, check=False)
+    if result.returncode != 0:
+        log.error("gallery-dl exited with code %s for %s", result.returncode, source)
+        return False
+    return True
+
+
+def upload_downloads(settings: dict[str, Any], scan_root: Path, client, bucket: str) -> int:
+    allowed = {str(ext).lower().lstrip(".") for ext in settings["allowed_extensions"]}
+    maximum_bytes = int(settings.get("maximum_file_size_mb", 500)) * 1024 * 1024
+    prefix = str(settings.get("r2_gallery_prefix", "gallery/"))
+    index_items = read_index(client, bucket)
+    indexed_keys = {item.get("key") for item in index_items if isinstance(item, dict)}
+    uploaded = 0
+
+    for file_path in scan_root.rglob("*"):
+        if not file_path.is_file():
+            continue
+        extension = file_path.suffix.lower().lstrip(".")
+        if extension not in allowed:
+            log.info("Discarding unwanted extension: %s", file_path.name)
+            continue
+        size = file_path.stat().st_size
+        if size <= 0 or size > maximum_bytes:
+            log.info("Discarding file outside size limit: %s (%s bytes)", file_path.name, size)
+            continue
+
+        relative = file_path.relative_to(scan_root).as_posix()
+        key = object_key(prefix, file_path, relative)
+        if key in indexed_keys:
+            log.info("Already present in R2 index; skipping: %s", file_path.name)
+            continue
+
+        content_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+        client.upload_file(
+            str(file_path),
+            bucket,
+            key,
+            ExtraArgs={"ContentType": content_type, "CacheControl": "public, max-age=31536000, immutable"},
+        )
+        index_items.append({"key": key, "ext": extension, "size": size})
+        indexed_keys.add(key)
+        uploaded += 1
+        log.info("Uploaded %s -> r2://%s/%s", file_path.name, bucket, key)
+
+    if uploaded:
+        write_index(client, bucket, index_items)
+        log.info("Updated %s with %s total media items", INDEX_KEY, len(index_items))
+    else:
+        log.info("No new media files needed uploading")
+    return uploaded
+
+
+def scan_once(settings: dict[str, Any], client, bucket: str) -> None:
+    with tempfile.TemporaryDirectory(prefix="gooning-party-") as tmp:
+        scan_root = Path(tmp)
+        success_count = 0
+        for source in settings["sources"]:
+            if run_gallery_dl(str(source), scan_root):
+                success_count += 1
+        if not success_count:
+            raise RuntimeError("All configured source scans failed")
+        uploaded = upload_downloads(settings, scan_root, client, bucket)
+        log.info("Scan complete: %s new file(s) uploaded", uploaded)
+
+
+def main() -> int:
+    log.info("Starting Gooning Party Fresh v%s in one-run GitHub Actions mode", APP_VERSION)
+    settings = load_settings()
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    client = r2_client()
+    bucket = required_env("R2_BUCKET_NAME")
+    restore_archive(client, bucket)
+    build_gallery_dl_config(settings)
+
+    exit_code = 0
+    try:
+        scan_once(settings, client, bucket)
+    except Exception:
+        log.exception("Scan failed")
+        exit_code = 1
+    finally:
+        try:
+            save_archive(client, bucket)
+        except Exception:
+            log.exception("Could not save download history to R2")
+            exit_code = 1
+    return exit_code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

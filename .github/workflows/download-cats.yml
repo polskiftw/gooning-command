@@ -22,6 +22,78 @@ jobs:
       - name: Get the project files
         uses: actions/checkout@v4
 
+      - name: Apply private subreddit overrides when configured
+        shell: bash
+        env:
+          REDDIT_SOURCE_1: ${{ secrets.REDDIT_SOURCE_1 }}
+          REDDIT_SOURCE_2: ${{ secrets.REDDIT_SOURCE_2 }}
+          REDDIT_SOURCE_3: ${{ secrets.REDDIT_SOURCE_3 }}
+        run: |
+          set -euo pipefail
+
+          PRIVATE_SETTINGS="${RUNNER_TEMP}/gooning-party-private-settings.json"
+
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          source_path = Path("settings.json")
+          output_path = Path(os.environ["RUNNER_TEMP"]) / "gooning-party-private-settings.json"
+
+          settings = json.loads(source_path.read_text(encoding="utf-8"))
+          sources = list(settings.get("sources", []))
+
+          def normalize_source(value: str) -> str:
+              value = value.strip()
+              if not value:
+                  return ""
+              if value.startswith(("https://", "http://")):
+                  return value
+              value = value.strip("/")
+              if value.lower().startswith("r/"):
+                  value = value[2:]
+              return f"https://www.reddit.com/r/{value}/new/"
+
+          override_count = 0
+          for index in range(3):
+              env_name = f"REDDIT_SOURCE_{index + 1}"
+              override = normalize_source(os.getenv(env_name, ""))
+              if not override:
+                  continue
+              while len(sources) <= index:
+                  sources.append("")
+              sources[index] = override
+              override_count += 1
+
+              with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as env_file:
+                  env_file.write(f"MASKED_REDDIT_SOURCE_{index + 1}={override}\n")
+
+          settings["sources"] = sources
+          output_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+
+          with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as env_file:
+              env_file.write(f"SETTINGS_PATH={output_path}\n")
+
+          print(
+              f"Prepared runtime settings with {override_count} private subreddit override(s); "
+              "all remaining entries still use settings.json fallbacks."
+          )
+          PY
+
+          for value in "${REDDIT_SOURCE_1:-}" "${REDDIT_SOURCE_2:-}" "${REDDIT_SOURCE_3:-}"; do
+            if [ -n "$value" ]; then
+              echo "::add-mask::$value"
+            fi
+          done
+
+          for name in MASKED_REDDIT_SOURCE_1 MASKED_REDDIT_SOURCE_2 MASKED_REDDIT_SOURCE_3; do
+            value="${!name:-}"
+            if [ -n "$value" ]; then
+              echo "::add-mask::$value"
+            fi
+          done
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:

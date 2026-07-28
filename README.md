@@ -42,13 +42,31 @@ Upload files and the updated history to R2
 Cloudflare Worker reads R2 and displays the website
 ```
 
+## GitHub Actions workflows
+
+### Yoink
+
+`Yoink` is the normal collector workflow stored at `.github/workflows/download-cats.yml`.
+
+It runs on the configured schedule or can be started manually. It restores history, routes downloads through the home connection, uploads media directly to R2, updates `gallery-index.json`, and saves the updated history database.
+
+### Flush
+
+`Flush` is the manual-only repair workflow stored at `.github/workflows/flush.yml`.
+
+Run it only when a failed or cancelled upload may have left media objects in R2 before `gallery-index.json` was updated. It compares existing objects under `gallery/` with the index and adds missing valid media entries.
+
+Flush does not contact Reddit, use Tailscale, delete R2 objects, or remove existing index entries.
+
 ## Important files
 
 | File | Purpose |
 |---|---|
 | `app.py` | Collector, downloader, archive, R2 upload, and index logic |
+| `repair_index.py` | Rebuilds missing `gallery-index.json` entries from media already stored in R2 |
 | `settings.json` | Ordinary user-editable behavior and limits |
-| `.github/workflows/download-cats.yml` | Schedule, environment, Tailscale routing, secrets, and run phases |
+| `.github/workflows/download-cats.yml` | `Yoink`: scheduled collector, routing, secrets, and upload phases |
+| `.github/workflows/flush.yml` | `Flush`: manual-only R2 gallery-index repair |
 | `requirements.txt` | Python packages installed by GitHub Actions |
 | `DGD.md` | Literal setup, settings, behavior, and troubleshooting guide |
 

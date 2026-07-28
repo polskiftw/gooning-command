@@ -80,6 +80,14 @@ https://www.reddit.com/r/example/new/
 
 Open **[`DGD.md`](DGD.md)** for the full spoon-fed guide, including every setting, every secret name, the schedule, the collector phases, and what belongs in GitHub versus Cloudflare.
 
+## License
+
+This project is licensed under the **[PolyForm Noncommercial License 1.0.0](LICENSE)**.
+
+Noncommercial use is permitted under the license. Commercial use requires separate prior written permission from the copyright holder.
+
+Copyright © 2026 polskiftw.
+
 ---
 
 Made for one tiny, stubborn personal archive that would rather keep running than become an enterprise platform. ✨

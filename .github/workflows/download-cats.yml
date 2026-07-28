@@ -1,4 +1,4 @@
-name: Download cats to R2
+name: Yoink
 
 on:
   workflow_dispatch:

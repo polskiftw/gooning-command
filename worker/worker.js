@@ -8,25 +8,18 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    if (url.pathname === "/") {
-      return htmlResponse(APP_HTML);
-    }
-
-    if (url.pathname === "/api/random") {
-      return randomMedia(request, env);
-    }
+    if (url.pathname === "/") return htmlResponse(APP_HTML);
+    if (url.pathname === "/api/random") return randomMedia(request, env);
 
     if (url.pathname.startsWith("/media/")) {
-      const encodedKey = url.pathname.slice("/media/".length);
       let key;
       try {
-        key = decodeURIComponent(encodedKey);
+        key = decodeURIComponent(url.pathname.slice("/media/".length));
       } catch {
         return new Response("Bad media key", { status: 400 });
       }
-      if (!key.startsWith("gallery/")) {
-        return new Response("Not found", { status: 404 });
-      }
+
+      if (!key.startsWith("gallery/")) return new Response("Not found", { status: 404 });
       return serveMedia(request, env, key);
     }
 
@@ -71,9 +64,7 @@ async function randomMedia(request, env) {
     choices = items.filter((item) => String(item.ext).toLowerCase() === requested);
   }
 
-  if (!choices.length) {
-    return jsonResponse({ error: "No media matches that filter." }, 404);
-  }
+  if (!choices.length) return jsonResponse({ error: "No media matches that filter." }, 404);
 
   const item = choices[Math.floor(Math.random() * choices.length)];
   return jsonResponse({
@@ -120,7 +111,10 @@ function htmlResponse(body) {
 function jsonResponse(value, status = 200) {
   return new Response(JSON.stringify(value), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+    },
   });
 }
 
@@ -129,7 +123,7 @@ const APP_HTML = String.raw`<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Media Gallery</title>
+  <title>GParty</title>
   <style>
     :root { color-scheme: dark; font-family: system-ui, sans-serif; }
     * { box-sizing: border-box; }
@@ -187,7 +181,6 @@ const APP_HTML = String.raw`<!doctype html>
 
   function applySizeMode(media, centerNative = false) {
     if (!media) return;
-
     const { width, height } = intrinsicSize(media);
     if (!(width > 0 && height > 0)) return;
 
@@ -196,11 +189,8 @@ const APP_HTML = String.raw`<!doctype html>
 
     let renderedWidth = width;
     let renderedHeight = height;
-
     if (!native) {
-      const availableWidth = Math.max(1, stage.clientWidth);
-      const availableHeight = Math.max(1, stage.clientHeight);
-      const scale = Math.min(1, availableWidth / width, availableHeight / height);
+      const scale = Math.min(1, Math.max(1, stage.clientWidth) / width, Math.max(1, stage.clientHeight) / height);
       renderedWidth = Math.max(1, Math.round(width * scale));
       renderedHeight = Math.max(1, Math.round(height * scale));
     }
@@ -225,15 +215,18 @@ const APP_HTML = String.raw`<!doctype html>
     next.disabled = true;
     error.style.display = 'none';
     status.textContent = 'Loading…';
+
     try {
       const response = await fetch('/api/random?ext=' + encodeURIComponent(filter.value), { cache: 'no-store' });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Could not load media.');
 
       const ext = String(data.ext || '').toLowerCase();
-      let media;
-      if (ext === 'mp4' || ext === 'm4v' || ext === 'webm') {
-        media = document.createElement('video');
+      const media = ext === 'mp4' || ext === 'm4v' || ext === 'webm'
+        ? document.createElement('video')
+        : document.createElement('img');
+
+      if (media.tagName === 'VIDEO') {
         media.autoplay = true;
         media.loop = true;
         media.muted = true;
@@ -242,12 +235,13 @@ const APP_HTML = String.raw`<!doctype html>
         media.disablePictureInPicture = true;
         media.controls = false;
       } else {
-        media = document.createElement('img');
         media.alt = '';
         media.decoding = 'async';
       }
+
       media.id = 'media';
       media.src = data.url;
+
       const mediaWrap = document.createElement('div');
       mediaWrap.id = 'media-wrap';
       mediaWrap.appendChild(media);
@@ -280,6 +274,7 @@ const APP_HTML = String.raw`<!doctype html>
     sizeMode = sizeMode === 'fit' ? 'native' : 'fit';
     applySizeMode(event.target, sizeMode === 'native');
   });
+
   function reapplyCurrentSize() {
     const media = document.getElementById('media');
     if (media) applySizeMode(media, false);
@@ -287,7 +282,6 @@ const APP_HTML = String.raw`<!doctype html>
 
   window.addEventListener('resize', reapplyCurrentSize);
   document.addEventListener('fullscreenchange', reapplyCurrentSize);
-
   document.addEventListener('keydown', (event) => {
     if (event.code === 'Space') {
       event.preventDefault();

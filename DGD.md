@@ -1,4 +1,4 @@
-# Gooning Command — DGD Guide
+# GParty — DGD Guide
 
 This is the canonical guide for the GitHub collector side of the project.
 
@@ -37,12 +37,12 @@ A scheduled GitHub Actions run does this:
 4. Record and mask the runner's public IP.
 5. Restore the prior gallery-dl archive database from R2.
 6. Join the private Tailscale network.
-7. Select the Flint 2 as the Tailscale exit node.
+7. Select a Tailscale-compatible home router or other home-network device as the exit node.
 8. Verify that the public route changed to the home connection.
 9. Prepare Reddit cookies and the gallery-dl configuration.
 10. Scan every configured source.
 11. Download supported new media to temporary GitHub runner storage.
-12. Stop using the Flint 2 exit node.
+12. Stop using the home exit node.
 13. Verify that GitHub's normal public route returned.
 14. Upload downloaded media directly to R2.
 15. Update gallery-index.json in R2.
@@ -376,7 +376,7 @@ TS_EXIT_NODE_IP
 Purpose:
 
 - Join the private Tailscale network.
-- Select the Flint 2 exit node.
+- Select the configured home exit node.
 
 ## Reddit cookie secret
 
@@ -464,7 +464,7 @@ It:
 
 ## `download`
 
-Used while the Flint 2 exit node is active.
+Used while the configured home exit node is active.
 
 It:
 

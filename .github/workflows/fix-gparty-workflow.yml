@@ -1,0 +1,44 @@
+name: One-time GParty workflow cleanup
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fix-gparty-workflow.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  update-workflow:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Remove hardware-specific wording
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('.github/workflows/download-cats.yml')
+          text = path.read_text(encoding='utf-8')
+          replacements = {
+              'Route downloads through the Flint 2': 'Route downloads through the configured home exit node',
+              'Selecting the Flint 2 exit node...': 'Selecting the configured home exit node...',
+              'Home routing is active. Reddit and media downloads will use the Flint 2.': 'Home routing is active. Reddit and media downloads will use the configured home exit node.',
+              'Stop using the Flint 2 before R2 uploads': 'Stop using the home exit node before R2 uploads',
+              'Direct GitHub routing is restored. R2 uploads will bypass the Flint 2.': 'Direct GitHub routing is restored. R2 uploads will bypass the home exit node.',
+          }
+          for old, new in replacements.items():
+              text = text.replace(old, new)
+          if 'Flint 2' in text:
+              raise SystemExit('Workflow still contains Flint 2 wording')
+          path.write_text(text, encoding='utf-8')
+
+      - name: Commit cleaned workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/workflows/download-cats.yml
+          git commit -m "Generalize home exit-node wording" || exit 0
+          git push

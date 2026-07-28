@@ -135,10 +135,11 @@ const APP_HTML = String.raw`<!doctype html>
     * { box-sizing: border-box; }
     html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
     body { display: grid; grid-template-rows: 1fr auto; }
-    #stage { min-height: 0; display: grid; place-items: center; overflow: auto; cursor: zoom-in; }
-    #stage.native { display: block; cursor: zoom-out; }
-    #media { display: block; max-width: 100%; max-height: 100%; object-fit: contain; margin: auto; }
-    #stage.native #media { max-width: none; max-height: none; margin: 0; object-fit: unset; }
+    #stage { min-height: 0; overflow: auto; cursor: zoom-in; }
+    #stage.native { cursor: zoom-out; }
+    #media-wrap { min-width: 100%; min-height: 100%; display: grid; place-items: center; }
+    #media { display: block; max-width: none; max-height: none; object-fit: contain; }
+    #stage.native #media-wrap { width: max-content; height: max-content; }
     #bar { display: flex; gap: .6rem; align-items: center; justify-content: center; padding: .65rem; background: #101010; }
     button, select { font: inherit; padding: .55rem .8rem; border-radius: .45rem; border: 1px solid #555; background: #222; color: #fff; }
     button { cursor: pointer; font-weight: 700; }
@@ -176,6 +177,47 @@ const APP_HTML = String.raw`<!doctype html>
   const status = document.getElementById('status');
   const error = document.getElementById('error');
   let loading = false;
+  let sizeMode = 'fit';
+
+  function intrinsicSize(media) {
+    return media.tagName === 'VIDEO'
+      ? { width: media.videoWidth, height: media.videoHeight }
+      : { width: media.naturalWidth, height: media.naturalHeight };
+  }
+
+  function applySizeMode(media, centerNative = false) {
+    if (!media) return;
+
+    const { width, height } = intrinsicSize(media);
+    if (!(width > 0 && height > 0)) return;
+
+    const native = sizeMode === 'native';
+    stage.classList.toggle('native', native);
+
+    let renderedWidth = width;
+    let renderedHeight = height;
+
+    if (!native) {
+      const availableWidth = Math.max(1, stage.clientWidth);
+      const availableHeight = Math.max(1, stage.clientHeight);
+      const scale = Math.min(1, availableWidth / width, availableHeight / height);
+      renderedWidth = Math.max(1, Math.round(width * scale));
+      renderedHeight = Math.max(1, Math.round(height * scale));
+    }
+
+    media.style.width = renderedWidth + 'px';
+    media.style.height = renderedHeight + 'px';
+
+    requestAnimationFrame(() => {
+      if (native && centerNative) {
+        stage.scrollLeft = Math.max(0, (stage.scrollWidth - stage.clientWidth) / 2);
+        stage.scrollTop = Math.max(0, (stage.scrollHeight - stage.clientHeight) / 2);
+      } else if (!native) {
+        stage.scrollLeft = 0;
+        stage.scrollTop = 0;
+      }
+    });
+  }
 
   async function loadRandom() {
     if (loading) return;
@@ -206,9 +248,20 @@ const APP_HTML = String.raw`<!doctype html>
       }
       media.id = 'media';
       media.src = data.url;
-      stage.replaceChildren(media);
-      stage.classList.remove('native');
+      const mediaWrap = document.createElement('div');
+      mediaWrap.id = 'media-wrap';
+      mediaWrap.appendChild(media);
+      stage.replaceChildren(mediaWrap);
+      stage.scrollLeft = 0;
+      stage.scrollTop = 0;
       status.textContent = data.total + ' matching';
+
+      const readyEvent = media.tagName === 'VIDEO' ? 'loadedmetadata' : 'load';
+      media.addEventListener(readyEvent, () => applySizeMode(media, sizeMode === 'native'), { once: true });
+      if ((media.tagName === 'IMG' && media.complete && media.naturalWidth > 0) ||
+          (media.tagName === 'VIDEO' && media.readyState >= 1 && media.videoWidth > 0)) {
+        applySizeMode(media, sizeMode === 'native');
+      }
       if (media.tagName === 'VIDEO') media.play().catch(() => {});
     } catch (problem) {
       error.textContent = problem.message;
@@ -222,7 +275,19 @@ const APP_HTML = String.raw`<!doctype html>
 
   next.addEventListener('click', loadRandom);
   filter.addEventListener('change', loadRandom);
-  stage.addEventListener('click', () => stage.classList.toggle('native'));
+  stage.addEventListener('click', (event) => {
+    if (event.target.id !== 'media') return;
+    sizeMode = sizeMode === 'fit' ? 'native' : 'fit';
+    applySizeMode(event.target, sizeMode === 'native');
+  });
+  function reapplyCurrentSize() {
+    const media = document.getElementById('media');
+    if (media) applySizeMode(media, false);
+  }
+
+  window.addEventListener('resize', reapplyCurrentSize);
+  document.addEventListener('fullscreenchange', reapplyCurrentSize);
+
   document.addEventListener('keydown', (event) => {
     if (event.code === 'Space') {
       event.preventDefault();

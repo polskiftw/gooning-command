@@ -1,4 +1,4 @@
-# 🐾 Gooning Command
+# 🐾 GParty
 
 A small personal media collector that checks configured Reddit sources, downloads new media through a home internet connection, and stores the results in Cloudflare R2 for a separate Cloudflare Worker website to display.
 
@@ -9,7 +9,7 @@ A small personal media collector that checks configured Reddit sources, download
 - Runs automatically with GitHub Actions.
 - Restores the prior download-history database from R2.
 - Connects to a private Tailscale network.
-- Routes Reddit and media downloads through a Flint 2 home exit node.
+- Routes Reddit and media downloads through a Tailscale-compatible home router or other exit node.
 - Checks each configured subreddit for recent posts.
 - Uses cookies and a browser User-Agent instead of Reddit OAuth.
 - Downloads supported images, GIFs, and videos.
@@ -31,7 +31,7 @@ GitHub Actions
     ↓
 Restore download history from R2
     ↓
-Connect through Tailscale and the Flint 2
+Connect through Tailscale and a home exit node
     ↓
 Check Reddit and download new media
     ↓

@@ -31,7 +31,7 @@ There are two workflow files.
 File:
 
 ```text
-.github/workflows/yoink.yaml
+.github/workflows/yoink.yml
 ```
 
 Display name in the Actions tab:
@@ -86,7 +86,7 @@ A new run waits rather than cancelling an active Yoink run.
 File:
 
 ```text
-.github/workflows/flush.yaml
+.github/workflows/flush.yml
 ```
 
 Display name in the Actions tab:
@@ -142,11 +142,11 @@ Used by Flush. It rebuilds missing `gallery-index.json` entries from media objec
 
 Contains ordinary collector settings and limits.
 
-## `.github/workflows/yoink.yaml`
+## `.github/workflows/yoink.yml`
 
 Scheduled and manual collector workflow.
 
-## `.github/workflows/flush.yaml`
+## `.github/workflows/flush.yml`
 
 Manual-only R2 index repair workflow.
 
@@ -412,7 +412,7 @@ A change may require both when it affects R2 folder names, index structure, or m
 1. Open:
 
 ```text
-.github/workflows/yoink.yaml
+.github/workflows/yoink.yml
 ```
 
 2. Find the `schedule` section.

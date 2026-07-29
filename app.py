@@ -34,7 +34,7 @@ logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s | %(levelname)s | %(message)s",
 )
-log = logging.getLogger("gooning-party")
+log = logging.getLogger("gparty")
 
 
 
@@ -210,7 +210,7 @@ def build_gallery_dl_config(settings: dict[str, Any]) -> None:
             # Use the same explicit browser identity for Reddit, linked media hosts,
             # and requests delegated to yt-dlp. Do not silently use tool defaults.
             "user-agent": browser_user_agent,
-            "base-directory": "/tmp/gooning-party-downloads",
+            "base-directory": "/tmp/gparty-downloads",
             # Never use full Reddit titles as local filenames. Linux limits one
             # filename component to 255 bytes, and some post titles exceed that.
             # Keep gallery-dl's own generated base filename, but truncate it to
@@ -240,7 +240,7 @@ def build_gallery_dl_config(settings: dict[str, Any]) -> None:
             },
         },
         "downloader": {
-            "part-directory": "/tmp/gooning-party-parts",
+            "part-directory": "/tmp/gparty-parts",
             "ytdl": {
                 "format": "bestvideo*+bestaudio/best",
                 "forward-cookies": True,
@@ -540,7 +540,7 @@ def upload_all_sources(settings: dict[str, Any], client, bucket: str) -> None:
 
 def main() -> int:
     mode = os.getenv("APP_MODE", "full").strip().lower()
-    log.info("Starting Gooning Party Fresh v%s in %s mode", APP_VERSION, mode)
+    log.info("Starting GParty v%s in %s mode", APP_VERSION, mode)
     settings = load_settings()
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 

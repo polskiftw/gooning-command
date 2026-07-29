@@ -41,7 +41,7 @@ The collector and Worker share two storage conventions:
 | `settings.json` | Collector sources, limits, delays, extensions, and R2 prefix |
 | `.github/workflows/yoink.yml` | Scheduled and manual collection workflow |
 | `.github/workflows/flush.yml` | Manual R2 index repair workflow |
-| `.github/workflows/update-cloudflare.yml` | Manual Cloudflare Worker deployment workflow |
+| `.github/workflows/update-cf-web.yml` | Manual Cloudflare Worker deployment workflow |
 | `requirements.txt` | Python dependencies |
 | `DGD.md` | Complete alternate setup and maintenance guide |
 
@@ -136,7 +136,7 @@ Flush scans valid objects under `gallery/` and adds missing entries to `gallery-
 
 1. Create the Worker in Cloudflare or identify the existing Worker name.
 2. Add the Worker deployment secrets listed above.
-3. Open **Actions → update-cloudflare → Run workflow**.
+3. Open **Actions → update-cf-web → Run workflow**.
 4. Enter the exact existing Worker name.
 
 The workflow creates a temporary Wrangler configuration with:

@@ -2,11 +2,6 @@ name: update-cloudflare
 
 on:
   workflow_dispatch:
-    inputs:
-      worker_name:
-        description: Existing Cloudflare Worker name to replace
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -32,13 +27,13 @@ jobs:
       - name: Build temporary Wrangler configuration
         shell: bash
         env:
-          WORKER_NAME: ${{ inputs.worker_name }}
+          WORKER_NAME: ${{ secrets.CLOUDFLARE_WORKER_NAME }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
         run: |
           set -euo pipefail
 
           if [ -z "${WORKER_NAME:-}" ]; then
-            echo "Worker name is required."
+            echo "CLOUDFLARE_WORKER_NAME secret is missing."
             exit 1
           fi
 
@@ -51,6 +46,12 @@ jobs:
           name = "${WORKER_NAME}"
           main = "${GITHUB_WORKSPACE}/worker/worker.js"
           compatibility_date = "2026-07-28"
+
+          [limits]
+          cpu_ms = 300_000
+
+          [secrets]
+          required = ["CONTACT_EMAIL"]
 
           [[r2_buckets]]
           binding = "MEDIA_BUCKET"

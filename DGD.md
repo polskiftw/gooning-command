@@ -40,7 +40,7 @@ The collector and Worker communicate through the R2 bucket. They share an exact 
 | Path | Purpose |
 |---|---|
 | `app.py` | Collector phases, gallery-dl configuration, download history, R2 uploads, and index generation |
-| `repair_index.py` | Finds valid media objects missing from the gallery index |
+| `workers/repair_index.py` | Finds valid media objects missing from the gallery index |
 | `settings.json` | Collector configuration |
 | `worker/worker.js` | Cloudflare Worker routes, R2 reads, media streaming, and viewer interface |
 | `.github/workflows/yoink.yml` | Scheduled and manual collector workflow |
@@ -301,7 +301,7 @@ Flush
 
 Run it from **Actions → Flush → Run workflow** after an interrupted upload may have placed media objects in R2 before the updated manifest was written.
 
-Flush reads `gallery-index.json`, lists valid media under `gallery/`, and adds missing entries.
+Flush runs `workers/repair_index.py`, reads `gallery-index.json`, lists valid media under `gallery/`, and adds missing entries.
 
 # 10. Worker behavior
 
@@ -382,7 +382,7 @@ The current implementation is aligned as follows:
 |---|---|---|---|
 | Gallery index | `app.py`: `gallery-index.json` | `worker/worker.js`: `gallery-index.json` | Aligned |
 | Media prefix | `settings.json`: `gallery/` | Worker prefix validation: `gallery/` | Aligned |
-| Repair prefix | `repair_index.py`: gallery objects | Gallery index and Worker | Shared contract |
+| Repair prefix | `workers/repair_index.py`: gallery objects | Gallery index and Worker | Shared contract |
 | Bucket name | GitHub secret `R2_BUCKET_NAME` | Collector, Flush, deploy workflow | Shared secret |
 | Worker binding | Deploy workflow: `MEDIA_BUCKET` | Worker: `env.MEDIA_BUCKET` | Aligned |
 | Worker entrypoint | Deploy workflow | `worker/worker.js` | Aligned |

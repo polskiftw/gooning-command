@@ -8,6 +8,7 @@ let indexCache = { expires: 0, items: [] };
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    if (url.pathname === "/robots.txt") return robotsResponse();
     if (url.pathname === "/") return htmlResponse(renderAppHtml(env.CONTACT_EMAIL));
     if (url.pathname === "/api/random") return randomMedia(request, env);
 
@@ -91,6 +92,15 @@ async function serveMedia(request, env, key) {
     headers.set("content-length", String(length));
   }
   return new Response(object.body, { status, headers });
+}
+
+function robotsResponse() {
+  return new Response("User-agent: *\nDisallow: /\n", {
+    headers: {
+      "content-type": "text/plain; charset=utf-8",
+      "cache-control": "public, max-age=86400",
+    },
+  });
 }
 
 function htmlResponse(body) {

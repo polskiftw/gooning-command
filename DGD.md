@@ -20,7 +20,7 @@ Configured Reddit sources
           +---- download history ---------> R2: _internal/gallery-dl-archive-v0.2.1.sqlite3
                                                    |
                                                    v
-                                      workers/worker.js
+                                      worker/worker.js
                                                    |
                                                    v
                                          Browser viewer
@@ -40,8 +40,8 @@ The collector and Worker communicate through the R2 bucket. They share this stor
 | Path | Purpose |
 |---|---|
 | `app.py` | Collector phases, download history, R2 uploads, and index generation |
-| `workers/repair_index.py` | Finds valid media objects missing from the gallery index |
-| `workers/worker.js` | Cloudflare Worker routes, R2 reads, media streaming, and viewer interface |
+| `worker/repair_index.py` | Finds valid media objects missing from the gallery index |
+| `worker/worker.js` | Cloudflare Worker routes, R2 reads, media streaming, and viewer interface |
 | `settings.json` | Collector configuration |
 | `.github/workflows/yoink.yml` | Scheduled and manual collector workflow |
 | `.github/workflows/flush.yml` | Manual index repair workflow |
@@ -50,7 +50,7 @@ The collector and Worker communicate through the R2 bucket. They share this stor
 | `README.md` | Concise project README |
 | `DGD.md` | This complete alternate guide |
 
-Both Worker-related programs now live inside the plural `workers/` directory. They remain separate programs and perform separate jobs.
+Both Worker-related programs live inside the singular `worker/` directory. They remain separate programs and perform separate jobs.
 
 # 3. Cloudflare resources
 
@@ -243,7 +243,7 @@ Shape:
 }
 ```
 
-`app.py` writes this object after media uploads. `workers/worker.js` reads it and accepts entries whose keys begin with `gallery/`.
+`app.py` writes this object after media uploads. `worker/worker.js` reads it and accepts entries whose keys begin with `gallery/`.
 
 # 9. Flush workflow
 
@@ -255,14 +255,14 @@ File:
 
 Run it from **Actions → Flush → Run workflow** after an interrupted upload may have placed media objects in R2 before the updated index was written.
 
-Flush runs `workers/repair_index.py`, reads `gallery-index.json`, lists valid media under `gallery/`, and adds missing entries.
+Flush runs `worker/repair_index.py`, reads `gallery-index.json`, lists valid media under `gallery/`, and adds missing entries.
 
 # 10. Worker behavior
 
 Entrypoint:
 
 ```text
-workers/worker.js
+worker/worker.js
 ```
 
 Routes:
@@ -308,7 +308,7 @@ The workflow generates a temporary Wrangler configuration:
 
 ```toml
 name = "<entered Worker name>"
-main = "<repository>/workers/worker.js"
+main = "<repository>/worker/worker.js"
 compatibility_date = "2026-07-28"
 
 [[r2_buckets]]
@@ -319,7 +319,7 @@ bucket_name = "<R2_BUCKET_NAME>"
 The binding chain is:
 
 ```text
-workers/worker.js: env.MEDIA_BUCKET
+worker/worker.js: env.MEDIA_BUCKET
               maps to
 Wrangler binding: MEDIA_BUCKET
               maps to
@@ -332,12 +332,12 @@ Repository commits update the source only. The live Worker changes after the man
 
 | Connection | Producer/configuration | Consumer | Status |
 |---|---|---|---|
-| Gallery index | `app.py`: `gallery-index.json` | `workers/worker.js`: `gallery-index.json` | Aligned |
+| Gallery index | `app.py`: `gallery-index.json` | `worker/worker.js`: `gallery-index.json` | Aligned |
 | Media prefix | `settings.json`: `gallery/` | Worker prefix validation: `gallery/` | Aligned |
-| Repair prefix | `workers/repair_index.py`: gallery objects | Gallery index and Worker | Shared contract |
+| Repair prefix | `worker/repair_index.py`: gallery objects | Gallery index and Worker | Shared contract |
 | Bucket name | GitHub secret `R2_BUCKET_NAME` | Collector, Flush, deploy workflow | Shared secret |
 | Worker binding | Deploy workflow: `MEDIA_BUCKET` | Worker: `env.MEDIA_BUCKET` | Aligned |
-| Worker entrypoint | Deploy workflow | `workers/worker.js` | Aligned |
+| Worker entrypoint | Deploy workflow | `worker/worker.js` | Aligned |
 | Deployment trigger | `workflow_dispatch` | Manual Actions run | Manual |
 
 # 13. First deployment procedure

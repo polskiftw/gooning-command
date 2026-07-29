@@ -1,4 +1,4 @@
-name: Update Cloudflare
+name: update-cloudflare
 
 on:
   workflow_dispatch:

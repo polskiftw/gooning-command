@@ -28,6 +28,7 @@ jobs:
           REDDIT_SOURCE_1: ${{ secrets.REDDIT_SOURCE_1 }}
           REDDIT_SOURCE_2: ${{ secrets.REDDIT_SOURCE_2 }}
           REDDIT_SOURCE_3: ${{ secrets.REDDIT_SOURCE_3 }}
+          REDDIT_SOURCE_4: ${{ secrets.REDDIT_SOURCE_4 }}
         run: |
           set -euo pipefail
 
@@ -56,7 +57,7 @@ jobs:
               return f"https://www.reddit.com/r/{value}/new/"
 
           override_count = 0
-          for index in range(3):
+          for index in range(4):
               env_name = f"REDDIT_SOURCE_{index + 1}"
               override = normalize_source(os.getenv(env_name, ""))
               if not override:
@@ -81,13 +82,13 @@ jobs:
           )
           PY
 
-          for value in "${REDDIT_SOURCE_1:-}" "${REDDIT_SOURCE_2:-}" "${REDDIT_SOURCE_3:-}"; do
+          for value in "${REDDIT_SOURCE_1:-}" "${REDDIT_SOURCE_2:-}" "${REDDIT_SOURCE_3:-}" "${REDDIT_SOURCE_4:-}"; do
             if [ -n "$value" ]; then
               echo "::add-mask::$value"
             fi
           done
 
-          for name in MASKED_REDDIT_SOURCE_1 MASKED_REDDIT_SOURCE_2 MASKED_REDDIT_SOURCE_3; do
+          for name in MASKED_REDDIT_SOURCE_1 MASKED_REDDIT_SOURCE_2 MASKED_REDDIT_SOURCE_3 MASKED_REDDIT_SOURCE_4; do
             value="${!name:-}"
             if [ -n "$value" ]; then
               echo "::add-mask::$value"

@@ -1,4 +1,4 @@
-name: Adopt Orphans
+name: adopt-orphans
 
 on:
   workflow_dispatch:

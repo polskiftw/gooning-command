@@ -37,11 +37,11 @@ The collector and Worker share two storage conventions:
 |---|---|
 | `app.py` | Collector, download history, R2 uploads, and index generation |
 | `workers/repair_index.py` | Repairs index entries for media already present in R2 |
+| `workers/worker.js` | Cloudflare Worker and browser viewer |
 | `settings.json` | Collector sources, limits, delays, extensions, and R2 prefix |
-| `worker/worker.js` | Cloudflare Worker and browser viewer |
 | `.github/workflows/yoink.yml` | Scheduled and manual collection workflow |
 | `.github/workflows/flush.yml` | Manual R2 index repair workflow |
-| `.github/workflows/deploy-worker.yml` | Manual Cloudflare Worker deployment workflow |
+| `.github/workflows/update-cloudflare.yml` | Manual Cloudflare Worker deployment workflow |
 | `requirements.txt` | Python dependencies |
 | `DGD.md` | Complete alternate setup and maintenance guide |
 
@@ -85,7 +85,7 @@ CLOUDFLARE_ACCOUNT_ID
 R2_BUCKET_NAME
 ```
 
-`R2_BUCKET_NAME` is shared by the collector and Worker deployment. The deployment workflow binds that bucket to the Worker as `MEDIA_BUCKET`, matching `env.MEDIA_BUCKET` in `worker/worker.js`.
+`R2_BUCKET_NAME` is shared by the collector and Worker deployment. The deployment workflow binds that bucket to the Worker as `MEDIA_BUCKET`, matching `env.MEDIA_BUCKET` in `workers/worker.js`.
 
 ## Configure the collector
 
@@ -136,13 +136,13 @@ Flush scans valid objects under `gallery/` and adds missing entries to `gallery-
 
 1. Create the Worker in Cloudflare or identify the existing Worker name.
 2. Add the Worker deployment secrets listed above.
-3. Open **Actions → Deploy Worker → Run workflow**.
+3. Open **Actions → update-cloudflare → Run workflow**.
 4. Enter the exact existing Worker name.
 
 The workflow creates a temporary Wrangler configuration with:
 
 ```toml
-main = "worker/worker.js"
+main = "workers/worker.js"
 
 [[r2_buckets]]
 binding = "MEDIA_BUCKET"

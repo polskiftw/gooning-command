@@ -45,7 +45,7 @@ The collector and Worker communicate through the R2 bucket. They share this stor
 | `settings.json` | Collector configuration |
 | `.github/workflows/yoink.yml` | Scheduled and manual collector workflow |
 | `.github/workflows/flush.yml` | Manual index repair workflow |
-| `.github/workflows/update-cloudflare.yml` | Manual Worker deployment workflow |
+| `.github/workflows/update-cf-web.yml` | Manual Worker deployment workflow |
 | `requirements.txt` | Python dependencies installed by GitHub Actions |
 | `README.md` | Concise project README |
 | `DGD.md` | This complete alternate guide |
@@ -293,16 +293,16 @@ The index is cached in Worker memory for 60 seconds. Media responses use private
 File:
 
 ```text
-.github/workflows/update-cloudflare.yml
+.github/workflows/update-cf-web.yml
 ```
 
 Actions display name:
 
 ```text
-update-cloudflare
+update-cf-web
 ```
 
-Run it from **Actions → update-cloudflare → Run workflow** and enter the exact existing Cloudflare Worker name.
+Run it from **Actions → update-cf-web → Run workflow** and enter the exact existing Cloudflare Worker name.
 
 The workflow generates a temporary Wrangler configuration:
 
@@ -353,7 +353,7 @@ Repository commits update the source only. The live Worker changes after the man
 9. Create the Cloudflare Worker.
 10. Create the Worker deployment API token.
 11. Configure `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
-12. Run update-cloudflare with the exact Worker name.
+12. Run update-cf-web with the exact Worker name.
 13. Open the Worker URL and confirm that the viewer loads indexed media.
 
 # 14. Routine operation
@@ -368,7 +368,7 @@ Run Flush once.
 
 ## Publish Worker code changes
 
-Commit the source changes, then run update-cloudflare manually.
+Commit the source changes, then run update-cf-web manually.
 
 ## Change the collection schedule
 
@@ -398,7 +398,7 @@ Run Flush, then allow up to 60 seconds for the Worker's in-memory index cache to
 
 ## A Worker code commit is not visible on the site
 
-Run the update-cloudflare workflow. Deployment is manual.
+Run the update-cf-web workflow. Deployment is manual.
 
 # 16. Documentation maintenance
 

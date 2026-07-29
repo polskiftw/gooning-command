@@ -111,6 +111,7 @@ This value is the complete Netscape-format `cookies.txt` file encoded as one Bas
 REDDIT_SOURCE_1
 REDDIT_SOURCE_2
 REDDIT_SOURCE_3
+REDDIT_SOURCE_4
 ```
 
 Each value may be a subreddit name or a complete Reddit `/new/` URL. The workflow writes a temporary settings file and leaves the committed `settings.json` unchanged.

@@ -2,7 +2,7 @@
 
 GParty is one repository containing the complete collection and viewing system. GitHub Actions runs the collector, Cloudflare R2 stores the media and state, and a Cloudflare Worker serves the browser viewer.
 
-This guide is self-contained. It covers setup, architecture, operation, deployment, maintenance, and troubleshooting for both halves of the project.
+This guide is self-contained. It covers setup, architecture, operation, deployment, maintenance, and troubleshooting.
 
 # 1. System overview
 
@@ -20,13 +20,13 @@ Configured Reddit sources
           +---- download history ---------> R2: _internal/gallery-dl-archive-v0.2.1.sqlite3
                                                    |
                                                    v
-                                      worker/worker.js
+                                      workers/worker.js
                                                    |
                                                    v
                                          Browser viewer
 ```
 
-The collector and Worker communicate through the R2 bucket. They share an exact storage contract:
+The collector and Worker communicate through the R2 bucket. They share this storage contract:
 
 | Purpose | Canonical value |
 |---|---|
@@ -39,16 +39,18 @@ The collector and Worker communicate through the R2 bucket. They share an exact 
 
 | Path | Purpose |
 |---|---|
-| `app.py` | Collector phases, gallery-dl configuration, download history, R2 uploads, and index generation |
+| `app.py` | Collector phases, download history, R2 uploads, and index generation |
 | `workers/repair_index.py` | Finds valid media objects missing from the gallery index |
+| `workers/worker.js` | Cloudflare Worker routes, R2 reads, media streaming, and viewer interface |
 | `settings.json` | Collector configuration |
-| `worker/worker.js` | Cloudflare Worker routes, R2 reads, media streaming, and viewer interface |
 | `.github/workflows/yoink.yml` | Scheduled and manual collector workflow |
 | `.github/workflows/flush.yml` | Manual index repair workflow |
-| `.github/workflows/deploy-worker.yml` | Manual Worker deployment workflow |
+| `.github/workflows/update-cloudflare.yml` | Manual Worker deployment workflow |
 | `requirements.txt` | Python dependencies installed by GitHub Actions |
 | `README.md` | Concise project README |
 | `DGD.md` | This complete alternate guide |
+
+Both Worker-related programs now live inside the plural `workers/` directory. They remain separate programs and perform separate jobs.
 
 # 3. Cloudflare resources
 
@@ -59,7 +61,7 @@ Create or identify:
 3. An R2 API token for the collector and repair workflow.
 4. A Cloudflare API token for Worker deployment.
 
-The collector reaches R2 through the S3-compatible endpoint:
+The collector reaches R2 through:
 
 ```text
 https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com
@@ -78,7 +80,7 @@ Repository
 → Actions
 ```
 
-## 4.1 Collector and Flush
+## Collector and Flush
 
 ```text
 R2_ACCOUNT_ID
@@ -87,7 +89,7 @@ R2_SECRET_ACCESS_KEY
 R2_BUCKET_NAME
 ```
 
-## 4.2 Tailscale routing for Yoink
+## Tailscale routing for Yoink
 
 ```text
 TS_OAUTH_CLIENT_ID
@@ -95,7 +97,7 @@ TS_OAUTH_SECRET
 TS_EXIT_NODE_IP
 ```
 
-## 4.3 Reddit browser session for Yoink
+## Reddit browser session for Yoink
 
 ```text
 REDDIT_COOKIES_BASE64
@@ -103,7 +105,7 @@ REDDIT_COOKIES_BASE64
 
 This value is the complete Netscape-format `cookies.txt` file encoded as one Base64 line.
 
-## 4.4 Private source overrides
+## Private source overrides
 
 ```text
 REDDIT_SOURCE_1
@@ -113,7 +115,7 @@ REDDIT_SOURCE_3
 
 Each value may be a subreddit name or a complete Reddit `/new/` URL. The workflow writes a temporary settings file and leaves the committed `settings.json` unchanged.
 
-## 4.5 Worker deployment
+## Worker deployment
 
 ```text
 CLOUDFLARE_API_TOKEN
@@ -157,45 +159,7 @@ The exact keys in `settings.json` are:
 }
 ```
 
-## `sources`
-
-Reddit `/new/` listings scanned in order. The first three entries can be replaced by the private source secrets.
-
-## `browser_user_agent`
-
-A complete browser User-Agent on one line. The collector supplies it to gallery-dl, linked hosts, and yt-dlp.
-
-## `posts_per_subreddit_per_scan`
-
-Maximum number of newest posts examined per source in one run.
-
-## `reddit_request_delay_min_seconds` and `reddit_request_delay_max_seconds`
-
-Random delay range applied between Reddit and page requests.
-
-## `stop_after_consecutive_archived_posts`
-
-Stops scanning a source after this many consecutive archive matches.
-
-## `reddit_429_backoff_seconds`
-
-Pause used when Reddit returns HTTP 429.
-
-## `allowed_extensions`
-
-Extensions accepted for R2 upload and gallery index entries.
-
-## `r2_gallery_prefix`
-
-R2 prefix used for media objects. The canonical value is `gallery/`.
-
-## `maximum_file_size_mb`
-
-Largest accepted media file.
-
-## `download_retries` and `download_timeout_seconds`
-
-Downloader retry count and request timeout.
+Keep `r2_gallery_prefix` set to `gallery/` unless the same prefix is changed in the collector, repair script, and Worker.
 
 # 6. Yoink workflow
 
@@ -244,8 +208,6 @@ The collector uses these `APP_MODE` values:
 | `upload` | Upload media, update the gallery index, and save history |
 | `full` | Run restore, download, and upload in one local process |
 
-The workflow concurrency group allows a new scheduled run to wait behind an active run.
-
 # 7. Download history
 
 Canonical R2 key:
@@ -255,8 +217,6 @@ _internal/gallery-dl-archive-v0.2.1.sqlite3
 ```
 
 The archive is restored before each collection pass and saved after the upload phase. It records items already processed by gallery-dl.
-
-Object keys also include a stable fingerprint derived from the downloaded path and content. The index prevents uploading a key already present in the gallery manifest.
 
 # 8. R2 gallery index
 
@@ -283,7 +243,7 @@ Shape:
 }
 ```
 
-`app.py` writes this object after media uploads. `worker/worker.js` reads it and accepts entries whose keys begin with `gallery/`.
+`app.py` writes this object after media uploads. `workers/worker.js` reads it and accepts entries whose keys begin with `gallery/`.
 
 # 9. Flush workflow
 
@@ -293,13 +253,7 @@ File:
 .github/workflows/flush.yml
 ```
 
-Actions display name:
-
-```text
-Flush
-```
-
-Run it from **Actions → Flush → Run workflow** after an interrupted upload may have placed media objects in R2 before the updated manifest was written.
+Run it from **Actions → Flush → Run workflow** after an interrupted upload may have placed media objects in R2 before the updated index was written.
 
 Flush runs `workers/repair_index.py`, reads `gallery-index.json`, lists valid media under `gallery/`, and adds missing entries.
 
@@ -308,7 +262,7 @@ Flush runs `workers/repair_index.py`, reads `gallery-index.json`, lists valid me
 Entrypoint:
 
 ```text
-worker/worker.js
+workers/worker.js
 ```
 
 Routes:
@@ -339,22 +293,22 @@ The index is cached in Worker memory for 60 seconds. Media responses use private
 File:
 
 ```text
-.github/workflows/deploy-worker.yml
+.github/workflows/update-cloudflare.yml
 ```
 
 Actions display name:
 
 ```text
-Deploy Worker
+update-cloudflare
 ```
 
-Run it from **Actions → Deploy Worker → Run workflow** and enter the exact existing Cloudflare Worker name.
+Run it from **Actions → update-cloudflare → Run workflow** and enter the exact existing Cloudflare Worker name.
 
 The workflow generates a temporary Wrangler configuration:
 
 ```toml
 name = "<entered Worker name>"
-main = "<repository>/worker/worker.js"
+main = "<repository>/workers/worker.js"
 compatibility_date = "2026-07-28"
 
 [[r2_buckets]]
@@ -362,33 +316,29 @@ binding = "MEDIA_BUCKET"
 bucket_name = "<R2_BUCKET_NAME>"
 ```
 
-The binding is the mapping between JavaScript and the Cloudflare resource:
+The binding chain is:
 
 ```text
-worker/worker.js: env.MEDIA_BUCKET
-            maps to
+workers/worker.js: env.MEDIA_BUCKET
+              maps to
 Wrangler binding: MEDIA_BUCKET
-            maps to
+              maps to
 Cloudflare bucket: R2_BUCKET_NAME
 ```
 
-Commits update the source repository. The Worker changes after the manual deployment workflow completes successfully.
+Repository commits update the source only. The live Worker changes after the manual deployment workflow completes successfully.
 
 # 12. Wiring audit
 
-The current implementation is aligned as follows:
-
 | Connection | Producer/configuration | Consumer | Status |
 |---|---|---|---|
-| Gallery index | `app.py`: `gallery-index.json` | `worker/worker.js`: `gallery-index.json` | Aligned |
+| Gallery index | `app.py`: `gallery-index.json` | `workers/worker.js`: `gallery-index.json` | Aligned |
 | Media prefix | `settings.json`: `gallery/` | Worker prefix validation: `gallery/` | Aligned |
 | Repair prefix | `workers/repair_index.py`: gallery objects | Gallery index and Worker | Shared contract |
 | Bucket name | GitHub secret `R2_BUCKET_NAME` | Collector, Flush, deploy workflow | Shared secret |
 | Worker binding | Deploy workflow: `MEDIA_BUCKET` | Worker: `env.MEDIA_BUCKET` | Aligned |
-| Worker entrypoint | Deploy workflow | `worker/worker.js` | Aligned |
+| Worker entrypoint | Deploy workflow | `workers/worker.js` | Aligned |
 | Deployment trigger | `workflow_dispatch` | Manual Actions run | Manual |
-
-The Worker deployment workflow creates its Wrangler file only on the temporary GitHub runner. It does not replace collector configuration or change objects already stored in R2.
 
 # 13. First deployment procedure
 
@@ -403,7 +353,7 @@ The Worker deployment workflow creates its Wrangler file only on the temporary G
 9. Create the Cloudflare Worker.
 10. Create the Worker deployment API token.
 11. Configure `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
-12. Run Deploy Worker with the exact Worker name.
+12. Run update-cloudflare with the exact Worker name.
 13. Open the Worker URL and confirm that the viewer loads indexed media.
 
 # 14. Routine operation
@@ -418,7 +368,7 @@ Run Flush once.
 
 ## Publish Worker code changes
 
-Commit the source changes, then run Deploy Worker manually.
+Commit the source changes, then run update-cloudflare manually.
 
 ## Change the collection schedule
 
@@ -448,7 +398,7 @@ Run Flush, then allow up to 60 seconds for the Worker's in-memory index cache to
 
 ## A Worker code commit is not visible on the site
 
-Run the Deploy Worker workflow. Deployment is manual.
+Run the update-cloudflare workflow. Deployment is manual.
 
 # 16. Documentation maintenance
 

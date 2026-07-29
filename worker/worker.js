@@ -1,5 +1,7 @@
 const INDEX_KEY = "gallery-index.json";
 const ALLOWED_EXTENSIONS = ["jpg", "jpeg", "png", "gif", "webp", "mp4", "m4v", "webm"];
+const STILL_EXTENSIONS = new Set(["jpg", "jpeg", "png", "webp"]);
+const CLIP_EXTENSIONS = new Set(["gif", "mp4", "m4v", "webm"]);
 const VIDEO_EXTENSIONS = new Set(["mp4", "m4v", "webm"]);
 
 let indexCache = { expires: 0, items: [] };
@@ -56,10 +58,10 @@ async function randomMedia(request, env) {
   const items = await loadIndex(env);
 
   let choices = items;
-  if (requested === "images") {
-    choices = items.filter((item) => !VIDEO_EXTENSIONS.has(String(item.ext).toLowerCase()));
-  } else if (requested === "videos") {
-    choices = items.filter((item) => VIDEO_EXTENSIONS.has(String(item.ext).toLowerCase()));
+  if (requested === "stills") {
+    choices = items.filter((item) => STILL_EXTENSIONS.has(String(item.ext).toLowerCase()));
+  } else if (requested === "clips") {
+    choices = items.filter((item) => CLIP_EXTENSIONS.has(String(item.ext).toLowerCase()));
   } else if (requested !== "all" && ALLOWED_EXTENSIONS.includes(requested)) {
     choices = items.filter((item) => String(item.ext).toLowerCase() === requested);
   }
@@ -122,44 +124,61 @@ const APP_HTML = String.raw`<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <title>GParty</title>
   <style>
     :root { color-scheme: dark; font-family: system-ui, sans-serif; }
     * { box-sizing: border-box; }
     html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
     body { display: grid; grid-template-rows: 1fr auto; }
-    #stage { min-height: 0; overflow: auto; cursor: zoom-in; }
+    #stage { min-height: 0; overflow: auto; cursor: zoom-in; position: relative; }
     #stage.native { cursor: zoom-out; }
     #media-wrap { min-width: 100%; min-height: 100%; display: grid; place-items: center; }
     #media { display: block; max-width: none; max-height: none; object-fit: contain; }
     #stage.native #media-wrap { width: max-content; height: max-content; }
     #bar { display: flex; gap: .6rem; align-items: center; justify-content: center; padding: .65rem; background: #101010; }
-    button, select { font: inherit; padding: .55rem .8rem; border-radius: .45rem; border: 1px solid #555; background: #222; color: #fff; }
+    button, select, .icon-link { font: inherit; border-radius: .45rem; border: 1px solid #555; background: #222; color: #fff; }
+    button, select { padding: .55rem .8rem; }
     button { cursor: pointer; font-weight: 700; }
+    .filter-label { display: grid; gap: .25rem; }
+    .icon-link { width: 2.75rem; height: 2.75rem; display: grid; place-items: center; text-decoration: none; }
+    .icon-link svg { width: 1.45rem; height: 1.45rem; fill: currentColor; }
     #status { min-width: 8rem; color: #bbb; font-size: .9rem; }
-    #error { position: fixed; inset: 1rem 1rem auto; padding: .75rem; background: #5c1010; display: none; text-align: center; }
+    #hint { display: none; position: absolute; left: 50%; bottom: 1.1rem; transform: translateX(-50%); width: max-content; max-width: calc(100% - 2rem); padding: .55rem .75rem; border-radius: .45rem; background: rgb(0 0 0 / 55%); color: #fff; font-size: .95rem; line-height: 1.35; text-align: center; pointer-events: none; backdrop-filter: blur(4px); }
+    #error { position: fixed; inset: 1rem 1rem auto; padding: .75rem; background: #5c1010; display: none; text-align: center; z-index: 10; }
+
+    @media (max-width: 700px) {
+      body { grid-template-rows: minmax(0, 1fr) auto; padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+      #stage { overflow: hidden; cursor: pointer; padding: .35rem .35rem 0; }
+      #stage.native { cursor: pointer; }
+      #media-wrap { min-width: 0; min-height: 0; width: 100%; height: 100%; }
+      #media { width: 100% !important; height: 100% !important; max-width: 100%; max-height: 100%; object-fit: contain; }
+      #bar { justify-content: stretch; gap: .5rem; padding: .45rem .55rem .55rem; min-height: 4.25rem; }
+      #next, #status { display: none; }
+      .filter-label { flex: 1 1 auto; min-width: 0; gap: .15rem; font-size: .82rem; color: #d4d4d4; }
+      #filter { width: 100%; min-height: 2.75rem; padding: .45rem .7rem; font-size: 1rem; }
+      .icon-link { flex: 0 0 2.75rem; width: 2.75rem; height: 2.75rem; align-self: end; }
+      #hint { display: block; }
+    }
   </style>
 </head>
 <body>
   <main id="stage" title="Click media to toggle fit/native size"></main>
   <div id="bar">
     <button id="next" type="button">Next random</button>
-    <label>Filter
+    <label class="filter-label">Filter
       <select id="filter">
         <option value="all">All</option>
-        <option value="images">Images</option>
-        <option value="videos">Videos</option>
-        <option value="jpg">JPG</option>
-        <option value="jpeg">JPEG</option>
-        <option value="png">PNG</option>
-        <option value="gif">GIF</option>
-        <option value="webp">WEBP</option>
-        <option value="mp4">MP4</option>
-        <option value="m4v">M4V</option>
-        <option value="webm">WEBM</option>
+        <option value="stills">Stills</option>
+        <option value="clips">Clips</option>
       </select>
     </label>
+    <a class="icon-link" href="https://github.com/polskiftw/gparty" target="_blank" rel="noopener noreferrer" aria-label="Open GitHub repository" title="GitHub">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .7a11.5 11.5 0 0 0-3.64 22.41c.58.11.79-.25.79-.56v-2.03c-3.22.7-3.9-1.37-3.9-1.37-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.71.08-.71 1.17.08 1.78 1.2 1.78 1.2 1.04 1.78 2.72 1.27 3.39.97.1-.75.4-1.27.74-1.56-2.57-.29-5.27-1.29-5.27-5.73 0-1.27.45-2.3 1.2-3.11-.12-.3-.52-1.48.11-3.08 0 0 .98-.31 3.16 1.19a10.9 10.9 0 0 1 5.75 0c2.18-1.5 3.16-1.19 3.16-1.19.63 1.6.23 2.78.11 3.08.74.81 1.2 1.84 1.2 3.11 0 4.45-2.71 5.43-5.29 5.72.42.36.79 1.06.79 2.14v3.16c0 .31.21.68.8.56A11.5 11.5 0 0 0 12 .7Z"/></svg>
+    </a>
+    <a class="icon-link" href="mailto:contact@gooning.party" aria-label="Email contact@gooning.party" title="Email">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.75 4.5h18.5A2.75 2.75 0 0 1 24 7.25v9.5a2.75 2.75 0 0 1-2.75 2.75H2.75A2.75 2.75 0 0 1 0 16.75v-9.5A2.75 2.75 0 0 1 2.75 4.5Zm0 1.75a1 1 0 0 0-.64.23L12 14.58l9.89-8.1a1 1 0 0 0-.64-.23H2.75Zm19.5 2.03-6.87 5.63 6.64 4.01c.15-.34.23-.72.23-1.17V8.28ZM1.75 8.28v8.47c0 .45.08.83.23 1.17l6.64-4.01-6.87-5.63Zm8.31 6.8-6.7 4.05c.2.08.42.12.64.12h16c.22 0 .44-.04.64-.12l-6.7-4.05-1.38 1.13a.88.88 0 0 1-1.12 0l-1.38-1.13Z"/></svg>
+    </a>
     <span id="status"></span>
   </div>
   <div id="error"></div>
@@ -170,8 +189,10 @@ const APP_HTML = String.raw`<!doctype html>
   const filter = document.getElementById('filter');
   const status = document.getElementById('status');
   const error = document.getElementById('error');
+  const mobileQuery = window.matchMedia('(max-width: 700px)');
   let loading = false;
   let sizeMode = 'fit';
+  let showHint = true;
 
   function intrinsicSize(media) {
     return media.tagName === 'VIDEO'
@@ -181,6 +202,17 @@ const APP_HTML = String.raw`<!doctype html>
 
   function applySizeMode(media, centerNative = false) {
     if (!media) return;
+
+    if (mobileQuery.matches) {
+      sizeMode = 'fit';
+      stage.classList.remove('native');
+      media.style.width = '100%';
+      media.style.height = '100%';
+      stage.scrollLeft = 0;
+      stage.scrollTop = 0;
+      return;
+    }
+
     const { width, height } = intrinsicSize(media);
     if (!(width > 0 && height > 0)) return;
 
@@ -207,6 +239,14 @@ const APP_HTML = String.raw`<!doctype html>
         stage.scrollTop = 0;
       }
     });
+  }
+
+  function addHint() {
+    if (!mobileQuery.matches || !showHint) return;
+    const hint = document.createElement('div');
+    hint.id = 'hint';
+    hint.textContent = 'Tap the image to load the next random item';
+    stage.appendChild(hint);
   }
 
   async function loadRandom() {
@@ -246,6 +286,7 @@ const APP_HTML = String.raw`<!doctype html>
       mediaWrap.id = 'media-wrap';
       mediaWrap.appendChild(media);
       stage.replaceChildren(mediaWrap);
+      addHint();
       stage.scrollLeft = 0;
       stage.scrollTop = 0;
       status.textContent = data.total + ' matching';
@@ -268,9 +309,19 @@ const APP_HTML = String.raw`<!doctype html>
   }
 
   next.addEventListener('click', loadRandom);
-  filter.addEventListener('change', loadRandom);
+  filter.addEventListener('change', () => {
+    showHint = false;
+    loadRandom();
+  });
   stage.addEventListener('click', (event) => {
     if (event.target.id !== 'media') return;
+
+    if (mobileQuery.matches) {
+      showHint = false;
+      loadRandom();
+      return;
+    }
+
     sizeMode = sizeMode === 'fit' ? 'native' : 'fit';
     applySizeMode(event.target, sizeMode === 'native');
   });
@@ -281,10 +332,12 @@ const APP_HTML = String.raw`<!doctype html>
   }
 
   window.addEventListener('resize', reapplyCurrentSize);
+  mobileQuery.addEventListener('change', reapplyCurrentSize);
   document.addEventListener('fullscreenchange', reapplyCurrentSize);
   document.addEventListener('keydown', (event) => {
     if (event.code === 'Space') {
       event.preventDefault();
+      showHint = false;
       loadRandom();
     } else if (event.key.toLowerCase() === 'f') {
       if (document.fullscreenElement) document.exitFullscreen().catch(() => {});

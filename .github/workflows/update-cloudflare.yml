@@ -49,7 +49,7 @@ jobs:
 
           cat > "${RUNNER_TEMP}/wrangler.toml" <<EOF
           name = "${WORKER_NAME}"
-          main = "${GITHUB_WORKSPACE}/workers/worker.js"
+          main = "${GITHUB_WORKSPACE}/worker/worker.js"
           compatibility_date = "2026-07-28"
 
           [[r2_buckets]]

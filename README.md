@@ -36,8 +36,8 @@ The collector and Worker share two storage conventions:
 | Path | Purpose |
 |---|---|
 | `app.py` | Collector, download history, R2 uploads, and index generation |
-| `workers/repair_index.py` | Repairs index entries for media already present in R2 |
-| `workers/worker.js` | Cloudflare Worker and browser viewer |
+| `worker/repair_index.py` | Repairs index entries for media already present in R2 |
+| `worker/worker.js` | Cloudflare Worker and browser viewer |
 | `settings.json` | Collector sources, limits, delays, extensions, and R2 prefix |
 | `.github/workflows/yoink.yml` | Scheduled and manual collection workflow |
 | `.github/workflows/flush.yml` | Manual R2 index repair workflow |
@@ -85,7 +85,7 @@ CLOUDFLARE_ACCOUNT_ID
 R2_BUCKET_NAME
 ```
 
-`R2_BUCKET_NAME` is shared by the collector and Worker deployment. The deployment workflow binds that bucket to the Worker as `MEDIA_BUCKET`, matching `env.MEDIA_BUCKET` in `workers/worker.js`.
+`R2_BUCKET_NAME` is shared by the collector and Worker deployment. The deployment workflow binds that bucket to the Worker as `MEDIA_BUCKET`, matching `env.MEDIA_BUCKET` in `worker/worker.js`.
 
 ## Configure the collector
 
@@ -142,7 +142,7 @@ Flush scans valid objects under `gallery/` and adds missing entries to `gallery-
 The workflow creates a temporary Wrangler configuration with:
 
 ```toml
-main = "workers/worker.js"
+main = "worker/worker.js"
 
 [[r2_buckets]]
 binding = "MEDIA_BUCKET"

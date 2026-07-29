@@ -67,12 +67,13 @@ TS_EXIT_NODE_IP
 REDDIT_COOKIES_BASE64
 ```
 
-The first three configured sources can be privately replaced at runtime with:
+The first four configured sources can be privately replaced at runtime with:
 
 ```text
 REDDIT_SOURCE_1
 REDDIT_SOURCE_2
 REDDIT_SOURCE_3
+REDDIT_SOURCE_4
 ```
 
 Each source override accepts either a subreddit name or a complete Reddit `/new/` URL.

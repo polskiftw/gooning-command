@@ -10,7 +10,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    if (url.pathname === "/") return htmlResponse(APP_HTML);
+    if (url.pathname === "/") return htmlResponse(renderAppHtml(env.CONTACT_EMAIL));
     if (url.pathname === "/api/random") return randomMedia(request, env);
 
     if (url.pathname.startsWith("/media/")) {
@@ -120,6 +120,23 @@ function jsonResponse(value, status = 200) {
   });
 }
 
+function escapeHtmlAttribute(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+function renderAppHtml(contactEmail) {
+  const email = String(contactEmail || "").trim();
+  if (!email) throw new Error("CONTACT_EMAIL secret is missing");
+  const escapedEmail = escapeHtmlAttribute(email);
+  return APP_HTML
+    .replaceAll("__CONTACT_EMAIL_HREF__", `mailto:${escapedEmail}`)
+    .replaceAll("__CONTACT_EMAIL_LABEL__", `Email ${escapedEmail}`);
+}
+
 const APP_HTML = String.raw`<!doctype html>
 <html lang="en">
 <head>
@@ -179,7 +196,7 @@ const APP_HTML = String.raw`<!doctype html>
       <a class="icon-link" href="https://github.com/polskiftw/gparty" target="_blank" rel="noopener noreferrer" aria-label="Open GitHub repository">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .7a11.5 11.5 0 0 0-3.64 22.41c.58.11.79-.25.79-.56v-2.03c-3.22.7-3.9-1.37-3.9-1.37-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.71.08-.71 1.17.08 1.78 1.2 1.78 1.2 1.04 1.78 2.72 1.27 3.39.97.1-.75.4-1.27.74-1.56-2.57-.29-5.27-1.29-5.27-5.73 0-1.27.45-2.3 1.2-3.11-.12-.3-.52-1.48.11-3.08 0 0 .98-.31 3.16 1.19a10.9 10.9 0 0 1 5.75 0c2.18-1.5 3.16-1.19 3.16-1.19.63 1.6.23 2.78.11 3.08.74.81 1.2 1.84 1.2 3.11 0 4.45-2.71 5.43-5.29 5.72.42.36.79 1.06.79 2.14v3.16c0 .31.21.68.8.56A11.5 11.5 0 0 0 12 .7Z"/></svg>
       </a>
-      <a class="icon-link" href="mailto:contact@gooning.party" aria-label="Email contact@gooning.party">
+      <a class="icon-link" href="__CONTACT_EMAIL_HREF__" aria-label="__CONTACT_EMAIL_LABEL__">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.75 4.5h18.5A2.75 2.75 0 0 1 24 7.25v9.5a2.75 2.75 0 0 1-2.75 2.75H2.75A2.75 2.75 0 0 1 0 16.75v-9.5A2.75 2.75 0 0 1 2.75 4.5Zm0 1.75a1 1 0 0 0-.64.23L12 14.58l9.89-8.1a1 1 0 0 0-.64-.23H2.75Zm19.5 2.03-6.87 5.63 6.64 4.01c.15-.34.23-.72.23-1.17V8.28ZM1.75 8.28v8.47c0 .45.08.83.23 1.17l6.64-4.01-6.87-5.63Zm8.31 6.8-6.7 4.05c.2.08.42.12.64.12h16c.22 0 .44-.04.64-.12l-6.7-4.05-1.38 1.13a.88.88 0 0 1-1.12 0l-1.38-1.13Z"/></svg>
       </a>
     </div>
@@ -266,7 +283,7 @@ const APP_HTML = String.raw`<!doctype html>
       if (!response.ok) throw new Error(data.error || 'Could not load media.');
 
       const ext = String(data.ext || '').toLowerCase();
-      const media = ext === 'mp4' || ext === 'm4v' || ext === 'webm'
+      const media = VIDEO_EXTENSIONS.has(ext)
         ? document.createElement('video')
         : document.createElement('img');
 

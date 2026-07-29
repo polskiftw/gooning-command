@@ -1,3 +1,6 @@
+import APP_SCRIPT from "./app.js";
+import APP_STYLE from "./style.css";
+
 const INDEX_KEY = "gallery-index.json";
 const ALLOWED_EXTENSIONS = ["jpg", "jpeg", "png", "gif", "webp", "mp4", "m4v", "webm"];
 const STILL_EXTENSIONS = new Set(["jpg", "jpeg", "png", "webp"]);
@@ -10,6 +13,8 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === "/robots.txt") return robotsResponse();
     if (url.pathname === "/") return htmlResponse(renderAppHtml(env.CONTACT_EMAIL));
+    if (url.pathname === "/style.css") return assetResponse(APP_STYLE, "text/css; charset=utf-8");
+    if (url.pathname === "/app.js") return assetResponse(APP_SCRIPT, "text/javascript; charset=utf-8");
     if (url.pathname === "/api/random") return randomMedia(request, env);
 
     if (url.pathname.startsWith("/media/")) {
@@ -108,8 +113,15 @@ function htmlResponse(body) {
     headers: {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
-      "x-content-type-options": "nosniff",
-      "referrer-policy": "no-referrer",
+    },
+  });
+}
+
+function assetResponse(body, contentType) {
+  return new Response(body, {
+    headers: {
+      "content-type": contentType,
+      "cache-control": "public, max-age=3600",
     },
   });
 }
@@ -147,44 +159,8 @@ const APP_HTML = String.raw`<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <title>GParty</title>
-  <style>
-    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
-    * { box-sizing: border-box; }
-    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
-    body { display: grid; grid-template-rows: 1fr auto; }
-    #stage { min-height: 0; overflow: auto; cursor: zoom-in; position: relative; }
-    #stage.native { cursor: zoom-out; }
-    #media-wrap { min-width: 100%; min-height: 100%; display: grid; place-items: center; }
-    #media { display: block; max-width: none; max-height: none; object-fit: contain; }
-    #stage.native #media-wrap { width: max-content; height: max-content; }
-    #bar { display: flex; gap: .8rem; align-items: center; justify-content: center; padding: .65rem; background: #000; }
-    button { font: inherit; padding: .55rem .8rem; border-radius: .45rem; border: 1px solid #555; background: #222; color: #fff; cursor: pointer; font-weight: 700; }
-    #footer-controls { width: min(20rem, 100%); display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; column-gap: .85rem; }
-    #filter { grid-column: 1; width: 4.5rem; margin: 0; padding: .4rem 0; border: 0; border-radius: 0; appearance: none; -webkit-appearance: none; background: transparent; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
-    #filter::-ms-expand { display: none; }
-    .icon-link { width: 2rem; height: 2rem; display: grid; place-items: center; color: #fff; text-decoration: none; background: transparent; border: 0; }
-    .icon-link:first-of-type { grid-column: 3; }
-    .icon-link:last-of-type { grid-column: 4; }
-    .icon-link svg { width: 1.45rem; height: 1.45rem; fill: currentColor; }
-    #filter:focus { outline: none; }
-    #filter:focus-visible, .icon-link:focus-visible { outline: 2px solid #fff; outline-offset: 4px; border-radius: .2rem; }
-    #status { min-width: 8rem; color: #bbb; font-size: .9rem; }
-    #hint { display: none; position: absolute; left: 50%; bottom: 1.1rem; transform: translateX(-50%); width: max-content; max-width: calc(100% - 2rem); padding: .55rem .75rem; border-radius: .45rem; background: rgb(0 0 0 / 55%); color: #fff; font-size: .95rem; line-height: 1.35; text-align: center; pointer-events: none; backdrop-filter: blur(4px); }
-    #error { position: fixed; inset: 1rem 1rem auto; padding: .75rem; background: #5c1010; display: none; text-align: center; z-index: 10; }
-    @media (max-width: 700px) {
-      body { grid-template-rows: minmax(0, 1fr) auto; padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
-      #stage { overflow: hidden; cursor: pointer; padding: .35rem .35rem 0; }
-      #stage.native { cursor: pointer; }
-      #media-wrap { min-width: 0; min-height: 0; width: 100%; height: 100%; }
-      #media { width: 100% !important; height: 100% !important; max-width: 100%; max-height: 100%; object-fit: contain; }
-      #bar { padding: .7rem .8rem .85rem; min-height: 3.5rem; }
-      #next, #status { display: none; }
-      #footer-controls { width: min(20rem, 100%); }
-      #filter { min-height: 2rem; font-size: 1rem; }
-      .icon-link { width: 2rem; height: 2rem; }
-      #hint { display: block; }
-    }
-  </style>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
 </head>
 <body>
   <main id="stage" title="Click media to toggle fit/native size"></main>
@@ -206,165 +182,5 @@ const APP_HTML = String.raw`<!doctype html>
     <span id="status"></span>
   </div>
   <div id="error"></div>
-<script>
-(() => {
-  const stage = document.getElementById('stage');
-  const next = document.getElementById('next');
-  const filter = document.getElementById('filter');
-  const status = document.getElementById('status');
-  const error = document.getElementById('error');
-  const mobileQuery = window.matchMedia('(max-width: 700px)');
-  let loading = false;
-  let sizeMode = 'fit';
-  let showHint = true;
-
-  function intrinsicSize(media) {
-    return media.tagName === 'VIDEO'
-      ? { width: media.videoWidth, height: media.videoHeight }
-      : { width: media.naturalWidth, height: media.naturalHeight };
-  }
-
-  function applySizeMode(media, centerNative = false) {
-    if (!media) return;
-    if (mobileQuery.matches) {
-      sizeMode = 'fit';
-      stage.classList.remove('native');
-      media.style.width = '100%';
-      media.style.height = '100%';
-      stage.scrollLeft = 0;
-      stage.scrollTop = 0;
-      return;
-    }
-
-    const { width, height } = intrinsicSize(media);
-    if (!(width > 0 && height > 0)) return;
-    const native = sizeMode === 'native';
-    stage.classList.toggle('native', native);
-
-    let renderedWidth = width;
-    let renderedHeight = height;
-    if (!native) {
-      const scale = Math.min(1, Math.max(1, stage.clientWidth) / width, Math.max(1, stage.clientHeight) / height);
-      renderedWidth = Math.max(1, Math.round(width * scale));
-      renderedHeight = Math.max(1, Math.round(height * scale));
-    }
-
-    media.style.width = renderedWidth + 'px';
-    media.style.height = renderedHeight + 'px';
-    requestAnimationFrame(() => {
-      if (native && centerNative) {
-        stage.scrollLeft = Math.max(0, (stage.scrollWidth - stage.clientWidth) / 2);
-        stage.scrollTop = Math.max(0, (stage.scrollHeight - stage.clientHeight) / 2);
-      } else if (!native) {
-        stage.scrollLeft = 0;
-        stage.scrollTop = 0;
-      }
-    });
-  }
-
-  function addHint() {
-    if (!mobileQuery.matches || !showHint) return;
-    const hint = document.createElement('div');
-    hint.id = 'hint';
-    hint.textContent = 'Tap the image to load the next random item';
-    stage.appendChild(hint);
-  }
-
-  async function loadRandom() {
-    if (loading) return;
-    loading = true;
-    next.disabled = true;
-    error.style.display = 'none';
-    status.textContent = 'Loading…';
-
-    try {
-      const response = await fetch('/api/random?ext=' + encodeURIComponent(filter.value), { cache: 'no-store' });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Could not load media.');
-
-      const ext = String(data.ext || '').toLowerCase();
-      const media = ext === 'mp4' || ext === 'm4v' || ext === 'webm'
-        ? document.createElement('video')
-        : document.createElement('img');
-
-      if (media.tagName === 'VIDEO') {
-        media.autoplay = true;
-        media.loop = true;
-        media.muted = true;
-        media.playsInline = true;
-        media.preload = 'auto';
-        media.disablePictureInPicture = true;
-        media.controls = false;
-      } else {
-        media.alt = '';
-        media.decoding = 'async';
-      }
-
-      media.id = 'media';
-      media.src = data.url;
-      const mediaWrap = document.createElement('div');
-      mediaWrap.id = 'media-wrap';
-      mediaWrap.appendChild(media);
-      stage.replaceChildren(mediaWrap);
-      addHint();
-      stage.scrollLeft = 0;
-      stage.scrollTop = 0;
-      status.textContent = data.total + ' matching';
-
-      const readyEvent = media.tagName === 'VIDEO' ? 'loadedmetadata' : 'load';
-      media.addEventListener(readyEvent, () => applySizeMode(media, sizeMode === 'native'), { once: true });
-      if ((media.tagName === 'IMG' && media.complete && media.naturalWidth > 0) ||
-          (media.tagName === 'VIDEO' && media.readyState >= 1 && media.videoWidth > 0)) {
-        applySizeMode(media, sizeMode === 'native');
-      }
-      if (media.tagName === 'VIDEO') media.play().catch(() => {});
-    } catch (problem) {
-      error.textContent = problem.message;
-      error.style.display = 'block';
-      status.textContent = 'Error';
-    } finally {
-      loading = false;
-      next.disabled = false;
-    }
-  }
-
-  next.addEventListener('click', loadRandom);
-  filter.addEventListener('change', () => {
-    showHint = false;
-    loadRandom();
-  });
-  stage.addEventListener('click', (event) => {
-    if (event.target.id !== 'media') return;
-    if (mobileQuery.matches) {
-      showHint = false;
-      loadRandom();
-      return;
-    }
-    sizeMode = sizeMode === 'fit' ? 'native' : 'fit';
-    applySizeMode(event.target, sizeMode === 'native');
-  });
-
-  function reapplyCurrentSize() {
-    const media = document.getElementById('media');
-    if (media) applySizeMode(media, false);
-  }
-
-  window.addEventListener('resize', reapplyCurrentSize);
-  mobileQuery.addEventListener('change', reapplyCurrentSize);
-  document.addEventListener('fullscreenchange', reapplyCurrentSize);
-  document.addEventListener('keydown', (event) => {
-    if (event.code === 'Space') {
-      event.preventDefault();
-      showHint = false;
-      loadRandom();
-    } else if (event.key.toLowerCase() === 'f') {
-      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-      else document.documentElement.requestFullscreen().catch(() => {});
-    }
-  });
-
-  loadRandom();
-})();
-</script>
 </body>
 </html>`;

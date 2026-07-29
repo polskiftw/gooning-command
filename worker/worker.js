@@ -2,14 +2,12 @@ const INDEX_KEY = "gallery-index.json";
 const ALLOWED_EXTENSIONS = ["jpg", "jpeg", "png", "gif", "webp", "mp4", "m4v", "webm"];
 const STILL_EXTENSIONS = new Set(["jpg", "jpeg", "png", "webp"]);
 const CLIP_EXTENSIONS = new Set(["gif", "mp4", "m4v", "webm"]);
-const VIDEO_EXTENSIONS = new Set(["mp4", "m4v", "webm"]);
 
 let indexCache = { expires: 0, items: [] };
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-
     if (url.pathname === "/") return htmlResponse(renderAppHtml(env.CONTACT_EMAIL));
     if (url.pathname === "/api/random") return randomMedia(request, env);
 
@@ -20,7 +18,6 @@ export default {
       } catch {
         return new Response("Bad media key", { status: 400 });
       }
-
       if (!key.startsWith("gallery/")) return new Response("Not found", { status: 404 });
       return serveMedia(request, env, key);
     }
@@ -47,7 +44,6 @@ async function loadIndex(env) {
   const items = Array.isArray(rawItems)
     ? rawItems.filter((item) => item && typeof item.key === "string" && item.key.startsWith("gallery/"))
     : [];
-
   indexCache = { expires: now + 60_000, items };
   return items;
 }
@@ -67,7 +63,6 @@ async function randomMedia(request, env) {
   }
 
   if (!choices.length) return jsonResponse({ error: "No media matches that filter." }, 404);
-
   const item = choices[Math.floor(Math.random() * choices.length)];
   return jsonResponse({
     key: item.key,
@@ -95,7 +90,6 @@ async function serveMedia(request, env, key) {
     headers.set("content-range", `bytes ${offset}-${offset + length - 1}/${object.size}`);
     headers.set("content-length", String(length));
   }
-
   return new Response(object.body, { status, headers });
 }
 
@@ -167,7 +161,6 @@ const APP_HTML = String.raw`<!doctype html>
     #status { min-width: 8rem; color: #bbb; font-size: .9rem; }
     #hint { display: none; position: absolute; left: 50%; bottom: 1.1rem; transform: translateX(-50%); width: max-content; max-width: calc(100% - 2rem); padding: .55rem .75rem; border-radius: .45rem; background: rgb(0 0 0 / 55%); color: #fff; font-size: .95rem; line-height: 1.35; text-align: center; pointer-events: none; backdrop-filter: blur(4px); }
     #error { position: fixed; inset: 1rem 1rem auto; padding: .75rem; background: #5c1010; display: none; text-align: center; z-index: 10; }
-
     @media (max-width: 700px) {
       body { grid-template-rows: minmax(0, 1fr) auto; padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
       #stage { overflow: hidden; cursor: pointer; padding: .35rem .35rem 0; }
@@ -223,7 +216,6 @@ const APP_HTML = String.raw`<!doctype html>
 
   function applySizeMode(media, centerNative = false) {
     if (!media) return;
-
     if (mobileQuery.matches) {
       sizeMode = 'fit';
       stage.classList.remove('native');
@@ -236,7 +228,6 @@ const APP_HTML = String.raw`<!doctype html>
 
     const { width, height } = intrinsicSize(media);
     if (!(width > 0 && height > 0)) return;
-
     const native = sizeMode === 'native';
     stage.classList.toggle('native', native);
 
@@ -250,7 +241,6 @@ const APP_HTML = String.raw`<!doctype html>
 
     media.style.width = renderedWidth + 'px';
     media.style.height = renderedHeight + 'px';
-
     requestAnimationFrame(() => {
       if (native && centerNative) {
         stage.scrollLeft = Math.max(0, (stage.scrollWidth - stage.clientWidth) / 2);
@@ -283,7 +273,7 @@ const APP_HTML = String.raw`<!doctype html>
       if (!response.ok) throw new Error(data.error || 'Could not load media.');
 
       const ext = String(data.ext || '').toLowerCase();
-      const media = VIDEO_EXTENSIONS.has(ext)
+      const media = ext === 'mp4' || ext === 'm4v' || ext === 'webm'
         ? document.createElement('video')
         : document.createElement('img');
 
@@ -302,7 +292,6 @@ const APP_HTML = String.raw`<!doctype html>
 
       media.id = 'media';
       media.src = data.url;
-
       const mediaWrap = document.createElement('div');
       mediaWrap.id = 'media-wrap';
       mediaWrap.appendChild(media);
@@ -336,13 +325,11 @@ const APP_HTML = String.raw`<!doctype html>
   });
   stage.addEventListener('click', (event) => {
     if (event.target.id !== 'media') return;
-
     if (mobileQuery.matches) {
       showHint = false;
       loadRandom();
       return;
     }
-
     sizeMode = sizeMode === 'fit' ? 'native' : 'fit';
     applySizeMode(event.target, sizeMode === 'native');
   });

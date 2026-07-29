@@ -44,7 +44,7 @@ jobs:
 
           cat > "${RUNNER_TEMP}/wrangler.toml" <<EOF
           name = "${WORKER_NAME}"
-          main = "${GITHUB_WORKSPACE}/worker/worker.js"
+          main = "${GITHUB_WORKSPACE}/worker/hardened-worker.js"
           compatibility_date = "2026-07-28"
 
           [limits]

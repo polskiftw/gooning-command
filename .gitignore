@@ -1,7 +1,4 @@
 .run-data/
 __pycache__/
 *.pyc
-REDDIT_COOKIES_BASE64.txt
-reddit-cookies.txt
-mycookies.txt
 .env

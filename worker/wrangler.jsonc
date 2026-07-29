@@ -1,6 +1,6 @@
 {
   "name": "gooning-party-fresh",
-  "main": "worker.js",
+  "main": "hardened-worker.js",
   "compatibility_date": "2026-07-26",
   "r2_buckets": [
     {

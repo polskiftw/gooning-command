@@ -36,7 +36,7 @@ The collector and Worker share two storage conventions:
 | Path | Purpose |
 |---|---|
 | `app.py` | Collector, download history, R2 uploads, and index generation |
-| `repair_index.py` | Repairs index entries for media already present in R2 |
+| `workers/repair_index.py` | Repairs index entries for media already present in R2 |
 | `settings.json` | Collector sources, limits, delays, extensions, and R2 prefix |
 | `worker/worker.js` | Cloudflare Worker and browser viewer |
 | `.github/workflows/yoink.yml` | Scheduled and manual collection workflow |

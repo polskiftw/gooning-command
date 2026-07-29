@@ -47,6 +47,11 @@ jobs:
           main = "${GITHUB_WORKSPACE}/worker/worker.js"
           compatibility_date = "2026-07-28"
 
+          [[rules]]
+          type = "Text"
+          globs = ["**/app.js", "**/*.css"]
+          fallthrough = true
+
           [limits]
           cpu_ms = 300_000
 

@@ -167,6 +167,16 @@ The current wiring is:
 
 These values must remain aligned.
 
+## Built with
+
+GParty relies on these open-source Python projects:
+
+- [gallery-dl](https://github.com/mikf/gallery-dl) — media extraction and download handling.
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) — video and media extraction support.
+- [Boto3](https://github.com/boto/boto3) — Python access to Cloudflare R2 through its S3-compatible API.
+
+Their exact installed versions are defined in `requirements.txt`.
+
 ## License
 
 GParty is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE). Commercial use requires prior written permission from the copyright holder.

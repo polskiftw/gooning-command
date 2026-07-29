@@ -12,8 +12,8 @@ const PERMISSIONS_POLICY = [
 ].join(", ");
 const CONTENT_SECURITY_POLICY = [
   "default-src 'none'",
-  "script-src 'self' 'unsafe-inline'",
-  "style-src 'self' 'unsafe-inline'",
+  "script-src 'self'",
+  "style-src 'self'",
   "img-src 'self' data: blob:",
   "media-src 'self' blob:",
   "connect-src 'self'",

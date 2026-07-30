@@ -154,7 +154,7 @@ It records these fingerprints in a local SQLite database:
 4. Download the `GParty-Deduper-Windows` artifact.
 5. Extract `GParty-Deduper-Windows.zip`.
 
-The workflow runs the test suite and builds the portable application on a real Windows runner with PyInstaller.
+The workflow runs the test suite and builds the portable application on a real Windows runner with PyInstaller. It also runs automatically when deduper code or its build workflow changes on `main`.
 
 ### Configure the deduper
 

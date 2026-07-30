@@ -342,6 +342,8 @@ The build workflow:
 5. Adds the example configuration and license.
 6. Uploads the finished portable ZIP for 30 days.
 
+It also runs automatically when deduper code or the deduper build workflow changes on `main`.
+
 # 12. Configure the Windows deduper
 
 Inside the extracted program folder:

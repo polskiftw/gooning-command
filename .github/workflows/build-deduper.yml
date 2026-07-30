@@ -2,6 +2,12 @@ name: Build GParty Deduper
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "deduper/**"
+      - ".github/workflows/build-deduper.yml"
 
 permissions:
   contents: read

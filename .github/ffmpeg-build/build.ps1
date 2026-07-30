@@ -1,3 +1,9 @@
+param(
+    [ValidateSet('stable','master')]
+    [string]$Variant = 'stable',
+    [switch]$ReuseSuite
+)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -11,7 +17,7 @@ $logRoot = Join-Path $diagRoot 'logs'
 $metaRoot = Join-Path $diagRoot 'metadata'
 New-Item -ItemType Directory -Force -Path $buildRoot, $outRoot, $diagRoot, $logRoot, $metaRoot | Out-Null
 
-$transcript = Join-Path $logRoot 'workflow-transcript.txt'
+$transcript = Join-Path $logRoot "workflow-$Variant-transcript.txt"
 Start-Transcript -Path $transcript -Force | Out-Null
 
 function Write-Stage([string]$Message) {
@@ -81,7 +87,7 @@ jo=2
 vlc=2
 CC=2
 zlib=1
-cores=0
+cores=1
 deleteSource=1
 strip=1
 pack=2
@@ -223,6 +229,29 @@ function Resolve-LatestStableTag {
     return $stable.name
 }
 
+function Write-SourceCommits {
+    $lines = [System.Collections.Generic.List[string]]::new()
+    if (Test-Path (Join-Path $suiteRoot '.git')) {
+        $sha = (& git -C $suiteRoot rev-parse HEAD 2>$null | Select-Object -First 1)
+        if ($sha) { $lines.Add("media-autobuild_suite=$sha") }
+    }
+    $sourceRoot = Join-Path $suiteRoot 'build'
+    if (Test-Path $sourceRoot) {
+        Get-ChildItem -Path $sourceRoot -Directory -Recurse -Force -Filter '.git' -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                $source = $_.Parent.FullName
+                try {
+                    $sha = (& git -C $source rev-parse HEAD 2>$null | Select-Object -First 1)
+                    if ($sha) {
+                        $name = [IO.Path]::GetRelativePath($sourceRoot, $source) -replace '\\','/'
+                        $lines.Add("$name=$sha")
+                    }
+                } catch {}
+            }
+    }
+    $lines | Sort-Object -Unique | Set-Content -Path (Join-Path $metaRoot 'source-commits.txt') -Encoding UTF8
+}
+
 function Run-Mabs([string]$Label, [string]$FfmpegPath) {
     Write-Ini -FfmpegPath $FfmpegPath
     Write-FfmpegOptions
@@ -307,32 +336,44 @@ exit /b 1
 }
 
 try {
-    Write-Stage 'Record environment'
-    Get-ComputerInfo | Out-File (Join-Path $metaRoot 'environment.txt') -Encoding UTF8
-    Get-ChildItem Env: | Sort-Object Name | Out-File (Join-Path $metaRoot 'environment-variables.txt') -Encoding UTF8
+    Write-Stage "Record $Variant environment"
+    Get-ComputerInfo | Out-File (Join-Path $metaRoot "environment-$Variant.txt") -Encoding UTF8
+    Get-ChildItem Env: | Sort-Object Name | Out-File (Join-Path $metaRoot "environment-variables-$Variant.txt") -Encoding UTF8
 
-    Invoke-Logged 'Clone media-autobuild_suite fresh' { git clone --depth 1 https://github.com/m-ab-s/media-autobuild_suite.git $suiteRoot }
-    Copy-Item (Join-Path $repoRoot '.github\ffmpeg-build\README.txt') $diagRoot -Force
+    if ($ReuseSuite) {
+        if (-not (Test-Path (Join-Path $suiteRoot 'media-autobuild_suite.bat'))) {
+            throw 'The reusable MABS workspace is missing.'
+        }
+    } else {
+        if (Test-Path $suiteRoot) { Remove-Item $suiteRoot -Recurse -Force }
+        Invoke-Logged 'Clone media-autobuild_suite fresh' { git clone --depth 1 https://github.com/m-ab-s/media-autobuild_suite.git $suiteRoot }
+        Copy-Item (Join-Path $repoRoot '.github\ffmpeg-build\README.txt') $diagRoot -Force
+    }
 
-    $stableTag = Resolve-LatestStableTag
-    Set-Content -Path (Join-Path $metaRoot 'resolved-versions.txt') -Value "stable=$stableTag`nmaster=HEAD at build time" -Encoding UTF8
+    $versionsPath = Join-Path $metaRoot 'resolved-versions.txt'
+    if ($Variant -eq 'stable') {
+        $stableTag = Resolve-LatestStableTag
+        Set-Content -Path $versionsPath -Value "stable=$stableTag`nmaster=HEAD at build time" -Encoding UTF8
+        $folder = Run-Mabs -Label 'stable' -FfmpegPath "https://github.com/FFmpeg/FFmpeg.git#tag=$stableTag"
+    } else {
+        if (-not (Test-Path $versionsPath)) {
+            Set-Content -Path $versionsPath -Value "stable=not built`nmaster=HEAD at build time" -Encoding UTF8
+        }
+        $folder = Run-Mabs -Label 'master' -FfmpegPath 'https://github.com/FFmpeg/FFmpeg.git#branch=master'
+    }
 
-    $masterFolder = Run-Mabs -Label 'master' -FfmpegPath 'https://github.com/FFmpeg/FFmpeg.git#branch=master'
-    Assert-Features -Folder $masterFolder -Label 'master'
-    Write-LocalValidation -Folder $masterFolder
-
-    $stableFolder = Run-Mabs -Label 'stable' -FfmpegPath "https://github.com/FFmpeg/FFmpeg.git#tag=$stableTag"
-    Assert-Features -Folder $stableFolder -Label 'stable'
-    Write-LocalValidation -Folder $stableFolder
-
-    Copy-Item (Join-Path $metaRoot 'resolved-versions.txt') $outRoot -Force
+    Assert-Features -Folder $folder -Label $Variant
+    Write-LocalValidation -Folder $folder
+    Write-SourceCommits
+    Copy-Item $versionsPath $outRoot -Force
+    Copy-Item (Join-Path $metaRoot 'source-commits.txt') $outRoot -Force
     Copy-Item (Join-Path $repoRoot '.github\ffmpeg-build\README.txt') $outRoot -Force
     Remove-Item (Join-Path $diagRoot 'failed-step.txt') -Force -ErrorAction SilentlyContinue
     Stop-Transcript | Out-Null
     exit 0
 }
 catch {
-    $_ | Format-List * -Force | Out-File (Join-Path $diagRoot 'SUMMARY.txt') -Encoding UTF8
+    $_ | Format-List * -Force | Out-File (Join-Path $diagRoot "SUMMARY-$Variant.txt") -Encoding UTF8
     Write-Error $_
     try { Stop-Transcript | Out-Null } catch {}
     exit 1

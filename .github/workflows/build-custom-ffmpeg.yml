@@ -28,52 +28,73 @@ jobs:
           Remove-Item -LiteralPath $env:OUT_ROOT -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item -LiteralPath $env:DIAG_ROOT -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path $env:BUILD_ROOT, $env:OUT_ROOT, $env:DIAG_ROOT | Out-Null
-          $builder = "${{ github.workspace }}\.github\ffmpeg-build\build.ps1"
-          (Get-Content -LiteralPath $builder -Raw).Replace('cores=0', 'cores=4') | Set-Content -LiteralPath $builder -Encoding UTF8
 
-      - name: Build stable and master from fresh source
-        id: compile
+      - name: Build stable from fresh source with one thread
+        id: stable
         continue-on-error: true
         shell: pwsh
         run: |
-          & "${{ github.workspace }}\.github\ffmpeg-build\build.ps1"
+          & "${{ github.workspace }}\.github\ffmpeg-build\build.ps1" -Variant stable
           exit $LASTEXITCODE
 
-      - name: Package successful build
-        if: steps.compile.outcome == 'success'
+      - name: Prepare stable checkpoint
+        if: steps.stable.outcome == 'success'
         shell: pwsh
         run: |
-          & "${{ github.workspace }}\.github\ffmpeg-build\package-success.ps1"
+          & "${{ github.workspace }}\.github\ffmpeg-build\package-success.ps1" -Variant stable
 
-      - name: Package diagnostics
-        if: steps.compile.outcome != 'success'
-        shell: pwsh
-        run: |
-          & "${{ github.workspace }}\.github\ffmpeg-build\package-diagnostics.ps1"
-
-      - name: Upload FFmpeg package
-        if: steps.compile.outcome == 'success'
+      - name: Upload stable checkpoint before master
+        if: steps.stable.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: ffmpeg-custom-windows-x64-${{ github.run_id }}
-          path: |
-            ffmpeg-custom-windows-x64-*.zip
-            ffmpeg-custom-windows-x64-*.zip.sha256.txt
+          name: ffmpeg-stable-windows-x64-${{ github.run_id }}
+          path: ffmpeg-output/stable/**
           retention-days: 1
           if-no-files-found: error
           compression-level: 0
 
-      - name: Upload one diagnostics ZIP
-        if: steps.compile.outcome != 'success'
+      - name: Build master with one thread
+        id: master
+        if: steps.stable.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          & "${{ github.workspace }}\.github\ffmpeg-build\build.ps1" -Variant master -ReuseSuite
+          exit $LASTEXITCODE
+
+      - name: Prepare stable and master artifact
+        if: steps.stable.outcome == 'success' && steps.master.outcome == 'success'
+        shell: pwsh
+        run: |
+          & "${{ github.workspace }}\.github\ffmpeg-build\package-success.ps1" -Variant all
+
+      - name: Upload stable and master directly
+        if: steps.stable.outcome == 'success' && steps.master.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-custom-windows-x64-${{ github.run_id }}
+          path: ffmpeg-output/**
+          retention-days: 1
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Collect direct diagnostics
+        if: always() && (steps.stable.outcome != 'success' || steps.master.outcome != 'success')
+        shell: pwsh
+        run: |
+          & "${{ github.workspace }}\.github\ffmpeg-build\package-diagnostics.ps1"
+
+      - name: Upload diagnostics without an inner ZIP
+        if: always() && (steps.stable.outcome != 'success' || steps.master.outcome != 'success')
         uses: actions/upload-artifact@v4
         with:
           name: ffmpeg-build-diagnostics-${{ github.run_id }}
-          path: ffmpeg-build-diagnostics.zip
+          path: ffmpeg-diagnostics/**
           retention-days: 1
           if-no-files-found: error
           compression-level: 0
 
       - name: Mark failed build as failed
-        if: steps.compile.outcome != 'success'
+        if: always() && (steps.stable.outcome != 'success' || steps.master.outcome != 'success')
         shell: pwsh
-        run: throw 'The FFmpeg build failed. Download the single diagnostics artifact.'
+        run: throw 'The FFmpeg build failed. Download the diagnostics artifact; any completed stable checkpoint remains available.'

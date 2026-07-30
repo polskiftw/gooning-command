@@ -241,7 +241,7 @@ class Database:
                 JOIN assets left_asset ON left_asset.key = p.left_key
                 JOIN assets right_asset ON right_asset.key = p.right_key
                 WHERE left_asset.deleted = 0 AND right_asset.deleted = 0
-                ORDER BY p.similarity DESC, p.id
+                ORDER BY p.similarity ASC, p.id
                 """
             ).fetchall()
         return [self._pair_from_row(row) for row in rows]

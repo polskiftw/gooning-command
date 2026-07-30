@@ -71,6 +71,18 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(pair.status, "included")
         self.assertEqual([row[0] for row in self.database.queued_deletions()], [right.key])
 
+    def test_scan_pairs_are_ordered_from_least_to_most_likely(self) -> None:
+        items = [asset(f"gallery/{name}.jpg") for name in ("a", "b", "c")]
+        self.database.upsert_inventory(items)
+        self.database.replace_pairs(
+            [
+                (items[2].key, items[1].key, 99.0, "obvious"),
+                (items[2].key, items[0].key, 71.0, "questionable"),
+            ]
+        )
+
+        self.assertEqual([pair.similarity for pair in self.database.scan_pairs()], [71.0, 99.0])
+
 
 if __name__ == "__main__":
     unittest.main()

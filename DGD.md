@@ -477,6 +477,8 @@ The keyboard Left and Right arrow keys perform the same navigation as PREVIOUS a
 
 An exclusion remains visible if revisited, but lasts only until the next SCAN. A new scan rebuilds the candidate queue and makes the object eligible again if it still matches.
 
+Pairs are ordered from the least likely accepted duplicate to the most likely duplicate. The current slider position decides which matches are accepted when SCAN begins.
+
 # 17. NUKE
 
 NUKE performs the queued R2 deletions.

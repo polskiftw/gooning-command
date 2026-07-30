@@ -189,7 +189,7 @@ The app keeps the complete workflow on one screen:
 5. Press **EXCLUDE FROM THIS NUKE** to spare the current right-side candidate and immediately advance to the next pair.
 6. **NUKE** immediately deletes every non-excluded right-side candidate and removes its key from `gallery-index.json`.
 
-There are no confirmation dialogs. Exclusions apply only to the current scan; pressing SCAN again makes every detected duplicate eligible again. The survivor is selected once per duplicate group by resolution, duration, perceptual-hash quality, and file size, in that order. If index cleanup fails after an object deletion, the app saves that cleanup locally and retries it the next time NUKE runs.
+Pairs are displayed from the least likely accepted match to the most likely match. There are no confirmation dialogs. Exclusions apply only to the current scan; pressing SCAN again makes every detected duplicate eligible again. The survivor is selected once per duplicate group by resolution, duration, perceptual-hash quality, and file size, in that order. If index cleanup fails after an object deletion, the app saves that cleanup locally and retries it the next time NUKE runs.
 
 ## Local deduper development
 

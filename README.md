@@ -146,6 +146,8 @@ It records these fingerprints in a local SQLite database:
 - Meta PDQ hashes for robust still-image comparison
 - vPDQ-style sampled PDQ frame sets for GIF and video comparison
 
+Crop-resistant hashes have their own indexed candidate search, so they can find a cropped duplicate even when the whole-image pHash is too different. Animated GIF frames are sampled across the complete animation with ceiling division; the configured `MAX_VIDEO_FRAMES` value is used as the ceiling and is not hard-coded to 300.
+
 ### Build the Windows ZIP
 
 1. Open **Actions → Build GParty Deduper**.

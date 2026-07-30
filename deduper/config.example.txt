@@ -12,7 +12,7 @@ INDEX_KEY=gallery-index.json
 # NUKE stays locked until this is YES.
 ALLOW_DELETE=NO
 
-# Hash one video frame per second, up to 300 frames.
+# Video sample spacing and configurable GIF/video sample ceiling.
 VIDEO_SAMPLE_SECONDS=1
 MAX_VIDEO_FRAMES=300
 

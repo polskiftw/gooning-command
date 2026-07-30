@@ -71,14 +71,15 @@ def thresholds(slider: int) -> dict[str, float | int]:
 def acquire_pairs(assets: list[Asset], slider: int) -> list[tuple[str, str, float, str]]:
     limits = thresholds(slider)
     candidates: dict[tuple[str, str], tuple[float, str]] = {}
+    qualified_crop_pairs: set[tuple[str, str]] = set()
     _exact_pairs(assets, candidates)
-    _image_pairs(assets, limits, candidates)
+    _image_pairs(assets, limits, candidates, qualified_crop_pairs)
     _video_pairs(assets, limits, candidates)
     minimum = float(limits["minimum_similarity"])
     selected = {
         keys: details
         for keys, details in candidates.items()
-        if details[0] >= minimum
+        if details[0] >= minimum or keys in qualified_crop_pairs
     }
     return _orient_duplicate_groups(assets, selected)
 
@@ -186,6 +187,7 @@ def _image_pairs(
     assets: list[Asset],
     limits: dict[str, float | int],
     candidates: dict[tuple[str, str], tuple[float, str]],
+    qualified_crop_pairs: set[tuple[str, str]],
 ) -> None:
     tree = BKTree()
     radius = int(limits["phash"])
@@ -217,12 +219,75 @@ def _image_pairs(
             _record(candidates, asset, other, score, f"Meta PDQ match: {score:.0f}%")
         pdq_tree.add(asset.pdq_hash, asset)
 
+    _crop_pairs(assets, limits, candidates, qualified_crop_pairs)
+
+
+def _crop_pairs(
+    assets: list[Asset],
+    limits: dict[str, float | int],
+    candidates: dict[tuple[str, str], tuple[float, str]],
+    qualified_crop_pairs: set[tuple[str, str]],
+) -> None:
+    """Find crop matches independently instead of requiring a pHash candidate first."""
+    tree = BKTree()
+    parsed_by_key: dict[str, list[str]] = {}
+    radius = int(float(limits["crop_distance"]))
+    required_ratio = float(limits["crop_ratio"])
+
+    for asset in assets:
+        if not asset.crop_hashes or asset.vpdq_hashes:
+            continue
+        segment_hashes = _parse_crop_hashes(asset.crop_hashes)
+        if not segment_hashes:
+            continue
+        parsed_by_key[asset.key] = segment_hashes
+
+        possible: dict[str, Asset] = {}
+        for segment_hash in set(segment_hashes):
+            for _, other in tree.search(segment_hash, radius):
+                possible[other.key] = other
+
+        for other in possible.values():
+            score = crop_similarity_values(
+                segment_hashes,
+                parsed_by_key[other.key],
+                radius,
+            )
+            if score / 100 < required_ratio:
+                continue
+            key = tuple(sorted((asset.key, other.key)))
+            qualified_crop_pairs.add(key)
+            _record(
+                candidates,
+                asset,
+                other,
+                score,
+                (
+                    f"crop-resistant match: {score:.0f}% segment overlap "
+                    f"(required {required_ratio:.0%})"
+                ),
+            )
+
+        for segment_hash in set(segment_hashes):
+            tree.add(segment_hash, asset)
+
 
 def crop_similarity(left_json: str | None, right_json: str | None, cutoff: float) -> float:
     if not left_json or not right_json:
         return 0.0
-    left = json.loads(left_json)
-    right = json.loads(right_json)
+    left = _parse_crop_hashes(left_json)
+    right = _parse_crop_hashes(right_json)
+    return crop_similarity_values(left, right, cutoff)
+
+
+def _parse_crop_hashes(value: str) -> list[str]:
+    parsed = json.loads(value)
+    if not isinstance(parsed, list):
+        return []
+    return [str(item) for item in parsed if item]
+
+
+def crop_similarity_values(left: list[str], right: list[str], cutoff: float) -> float:
     if not left or not right:
         return 0.0
     left_matches = sum(

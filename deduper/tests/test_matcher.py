@@ -47,6 +47,44 @@ class MatcherTests(unittest.TestCase):
         )
         self.assertEqual(len(pairs), 1)
 
+    def test_crop_hashes_discover_pair_without_phash_candidate(self) -> None:
+        shared = "0" * 16
+        pairs = acquire_pairs(
+            [
+                asset(
+                    "gallery/a.jpg",
+                    phash="0" * 16,
+                    crop_hashes=json.dumps([shared, "f" * 16]),
+                ),
+                asset(
+                    "gallery/b.jpg",
+                    phash="f" * 16,
+                    crop_hashes=json.dumps([shared, "5" * 16]),
+                ),
+            ],
+            50,
+        )
+        self.assertEqual(len(pairs), 1)
+        self.assertEqual(pairs[0][2], 50)
+        self.assertIn("crop-resistant match", pairs[0][3])
+
+    def test_crop_ratio_becomes_stricter_with_slider(self) -> None:
+        shared = "0" * 16
+        assets = [
+            asset(
+                "gallery/a.jpg",
+                phash="0" * 16,
+                crop_hashes=json.dumps([shared, "f" * 16]),
+            ),
+            asset(
+                "gallery/b.jpg",
+                phash="f" * 16,
+                crop_hashes=json.dumps([shared, "5" * 16]),
+            ),
+        ]
+        self.assertEqual(len(acquire_pairs(assets, 0)), 1)
+        self.assertEqual(acquire_pairs(assets, 99), [])
+
     def test_vpdq_similarity_is_bidirectional(self) -> None:
         same = "0" * 64
         other = "f" * 64

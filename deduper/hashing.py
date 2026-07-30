@@ -68,7 +68,7 @@ def _hash_gif(asset: Asset, path: Path, config: Config) -> None:
         image.seek(0)
         asset.phash, asset.crop_hashes, asset.pdq_hash, asset.pdq_quality = _still_hashes(image)
         if frame_count > 1:
-            step = max(1, frame_count // config.max_video_frames)
+            step = _ceiling_sample_step(frame_count, config.max_video_frames)
             hashes: list[dict[str, int | str]] = []
             elapsed = 0
             for index in range(frame_count):
@@ -79,6 +79,11 @@ def _hash_gif(asset: Asset, path: Path, config: Config) -> None:
                     hashes.append({"h": _pdq_to_hex(vector), "q": int(quality), "t": elapsed})
                 elapsed += int(image.info.get("duration", 100))
             asset.vpdq_hashes = json.dumps(hashes, separators=(",", ":"))
+
+
+def _ceiling_sample_step(frame_count: int, maximum_samples: int) -> int:
+    """Choose an evenly spaced step that never exceeds the configured sample count."""
+    return max(1, (frame_count + maximum_samples - 1) // maximum_samples)
 
 
 def _hash_video(asset: Asset, path: Path, config: Config) -> None:

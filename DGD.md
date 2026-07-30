@@ -428,6 +428,8 @@ Neither folder is uploaded to R2 or GitHub.
 
 For video and animated GIFs, the program samples frames, calculates a Meta PDQ hash for each useful frame, and compares the two sets in both directions. This follows the published vPDQ method while remaining buildable as a normal Windows application.
 
+Crop-resistant hashes have their own indexed search. This lets them find a crop even when the whole-image pHash does not create a possible pair. GIF sampling uses ceiling division across the complete animation, so it stays at or below the configurable `MAX_VIDEO_FRAMES` value without simply chopping off the ending.
+
 # 15. Slider and automatic target selection
 
 Move the slider before pressing:

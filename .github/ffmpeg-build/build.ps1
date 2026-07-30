@@ -31,6 +31,24 @@ function Invoke-Logged([string]$Name, [scriptblock]$Command) {
     if ($LASTEXITCODE -ne 0) { throw "$Name failed with exit code $LASTEXITCODE" }
 }
 
+function Write-SafeEnvironment([string]$Path) {
+    Get-ChildItem Env: |
+        Sort-Object Name |
+        ForEach-Object {
+            $value = if ($_.Name -match '(?i)(token|secret|password|passwd|pwd|credential|private|key|cookie|auth)') {
+                '[REDACTED]'
+            } else {
+                $_.Value
+            }
+            [PSCustomObject]@{
+                Name = $_.Name
+                Value = $value
+            }
+        } |
+        Format-Table -AutoSize |
+        Out-File $Path -Encoding UTF8
+}
+
 function Write-Ini([string]$FfmpegPath) {
     $ini = @"
 [compiler list]
@@ -338,7 +356,7 @@ exit /b 1
 try {
     Write-Stage "Record $Variant environment"
     Get-ComputerInfo | Out-File (Join-Path $metaRoot "environment-$Variant.txt") -Encoding UTF8
-    Get-ChildItem Env: | Sort-Object Name | Out-File (Join-Path $metaRoot "environment-variables-$Variant.txt") -Encoding UTF8
+    Write-SafeEnvironment -Path (Join-Path $metaRoot "environment-variables-$Variant.txt")
 
     if ($ReuseSuite) {
         if (-not (Test-Path (Join-Path $suiteRoot 'media-autobuild_suite.bat'))) {

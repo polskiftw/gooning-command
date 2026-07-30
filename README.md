@@ -128,9 +128,9 @@ Run **Actions → Yoink → Run workflow**, or allow its schedule to run:
 3,18,33,48 * * * *
 ```
 
-Yoink restores the archive database, selects the configured private exit node, downloads new media, restores the direct GitHub route, uploads media to R2, writes `gallery-index.json`, and saves the archive.
+Yoink restores the archive database, selects the configured private exit node, downloads new media, restores the direct GitHub route, uploads media to R2, conditionally merges additions into `gallery-index.json`, and saves the archive.
 
-Run **Actions → Flush → Run workflow** after an interrupted upload may have placed media into R2 without updating the index. Flush adds missing valid objects to `gallery-index.json`; it never deletes media.
+Run **Actions → Flush → Run workflow** after an interrupted upload may have placed media into R2 without updating the index. Flush adds missing valid objects to `gallery-index.json`; it never deletes media. Yoink, Flush, and the desktop deduper all use the same ETag-protected read/merge/write helper, so a concurrent writer must retry against the newest index instead of overwriting another writer's additions or removals.
 
 Run **Actions → update-cf-web → Run workflow** to publish Worker source changes. Repository commits do not automatically deploy the live Worker.
 
@@ -189,7 +189,7 @@ The app keeps the complete workflow on one screen:
 5. Press **EXCLUDE FROM THIS NUKE** to spare the current right-side candidate and immediately advance to the next pair.
 6. **NUKE** immediately deletes every non-excluded right-side candidate and removes its key from `gallery-index.json`.
 
-Pairs are displayed from the least likely accepted match to the most likely match. There are no confirmation dialogs. Exclusions apply only to the current scan; pressing SCAN again makes every detected duplicate eligible again. The survivor is selected once per duplicate group by resolution, duration, perceptual-hash quality, and file size, in that order. If index cleanup fails after an object deletion, the app saves that cleanup locally and retries it the next time NUKE runs.
+Pairs are displayed from the least likely accepted match to the most likely match. There are no confirmation dialogs. Exclusions apply only to the current scan; pressing SCAN again makes every detected duplicate eligible again. Each right-side deletion candidate must directly match its left-side survivor. Connected match chains can therefore be split into multiple safe groups instead of treating an indirect chain member as a duplicate. Survivors are preferred by resolution, duration, perceptual-hash quality, and file size, in that order. If index cleanup fails after an object deletion, the app saves that cleanup locally and retries it the next time NUKE runs.
 
 ## Local deduper development
 

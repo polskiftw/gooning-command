@@ -108,6 +108,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Test duplicate grouping and shared index writes
+        run: python -m unittest discover -s deduper/tests -v
+
       - name: Remember GitHub runner public IP
         shell: bash
         run: |

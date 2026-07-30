@@ -18,6 +18,8 @@ from boto3.s3.transfer import TransferConfig
 from botocore.client import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
+from deduper.index_store import merge_index_items, read_index_items
+
 APP_VERSION = "0.2.8"
 BASE_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = Path(os.getenv("SETTINGS_PATH", BASE_DIR / "settings.json"))
@@ -252,37 +254,6 @@ def build_gallery_dl_config(settings: dict[str, Any]) -> None:
     log.info("Generated gallery-dl configuration with the configured browser User-Agent")
 
 
-def read_index(client, bucket: str) -> list[dict[str, Any]]:
-    try:
-        response = client.get_object(Bucket=bucket, Key=INDEX_KEY)
-        payload = json.loads(response["Body"].read().decode("utf-8"))
-        if isinstance(payload, dict) and isinstance(payload.get("items"), list):
-            return payload["items"]
-        if isinstance(payload, list):
-            return payload
-    except ClientError as exc:
-        code = str(exc.response.get("Error", {}).get("Code", ""))
-        if code not in {"NoSuchKey", "404", "NotFound"}:
-            raise
-    return []
-
-
-def write_index(client, bucket: str, items: list[dict[str, Any]]) -> None:
-    payload = {
-        "version": 1,
-        "generated_at": int(time.time()),
-        "count": len(items),
-        "items": items,
-    }
-    client.put_object(
-        Bucket=bucket,
-        Key=INDEX_KEY,
-        Body=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
-        ContentType="application/json",
-        CacheControl="no-cache",
-    )
-
-
 def safe_name(path: Path) -> str:
     clean = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in path.name)
     return clean[-160:] or "media.bin"
@@ -336,8 +307,9 @@ def upload_downloads(settings: dict[str, Any], scan_root: Path, client, bucket: 
     allowed = {str(ext).lower().lstrip(".") for ext in settings["allowed_extensions"]}
     maximum_bytes = int(settings.get("maximum_file_size_mb", 500)) * 1024 * 1024
     prefix = str(settings.get("r2_gallery_prefix", "gallery/"))
-    index_items = read_index(client, bucket)
+    index_items = read_index_items(client, bucket, INDEX_KEY)
     indexed_keys = {item.get("key") for item in index_items if isinstance(item, dict)}
+    new_index_items: list[dict[str, Any]] = []
     uploaded = 0
     discovered = 0
     failed_uploads = 0
@@ -383,7 +355,7 @@ def upload_downloads(settings: dict[str, Any], scan_root: Path, client, bucket: 
                 )
                 continue
 
-            index_items.append({"key": key, "ext": extension, "size": size})
+            new_index_items.append({"key": key, "ext": extension, "size": size})
             indexed_keys.add(key)
             uploaded += 1
             log.info("Uploaded %s -> r2://%s/%s", file_path.name, bucket, key)
@@ -395,8 +367,13 @@ def upload_downloads(settings: dict[str, Any], scan_root: Path, client, bucket: 
                 log.warning("Could not remove temporary file: %s", file_path)
 
     if uploaded:
-        write_index(client, bucket, index_items)
-        log.info("Updated %s with %s total media items", INDEX_KEY, len(index_items))
+        merged_items = merge_index_items(
+            client,
+            bucket,
+            INDEX_KEY,
+            new_index_items,
+        )
+        log.info("Updated %s with %s total media items", INDEX_KEY, len(merged_items))
     else:
         log.info("No new media files needed uploading in this batch")
     return uploaded, discovered, failed_uploads

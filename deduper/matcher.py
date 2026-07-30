@@ -87,12 +87,13 @@ def _orient_duplicate_groups(
     assets: list[Asset],
     candidates: dict[tuple[str, str], tuple[float, str]],
 ) -> list[tuple[str, str, float, str]]:
-    """Turn matching edges into one survivor and unique deletion candidates per group."""
+    """Create safe groups whose deletion candidates directly match their survivor."""
     if not candidates:
         return []
 
     asset_by_key = {asset.key: asset for asset in assets}
     parent: dict[str, str] = {}
+    neighbors: dict[str, set[str]] = defaultdict(set)
 
     def find(key: str) -> str:
         parent.setdefault(key, key)
@@ -108,6 +109,8 @@ def _orient_duplicate_groups(
 
     for left, right in candidates:
         union(left, right)
+        neighbors[left].add(right)
+        neighbors[right].add(left)
 
     groups: dict[str, set[str]] = defaultdict(set)
     for key in parent:
@@ -115,31 +118,25 @@ def _orient_duplicate_groups(
 
     oriented: list[tuple[str, str, float, str]] = []
     for members in groups.values():
-        survivor = max(
-            members,
-            key=lambda key: _survivor_rank(asset_by_key[key]),
-        )
-        for deletion_candidate in members - {survivor}:
-            direct_key = tuple(sorted((survivor, deletion_candidate)))
-            details = candidates.get(direct_key)
-            if details is None:
-                linked = [
-                    (score, reason)
-                    for (left, right), (score, reason) in candidates.items()
-                    if deletion_candidate in {left, right} and {left, right} <= members
-                ]
-                score, reason = max(linked, key=lambda item: item[0])
-                reason = f"duplicate cluster link; {reason}"
-            else:
-                score, reason = details
-            oriented.append(
-                (
-                    survivor,
-                    deletion_candidate,
-                    score,
-                    f"automatic survivor; {reason}",
-                )
+        unassigned = set(members)
+        while unassigned:
+            survivor = max(
+                unassigned,
+                key=lambda key: _survivor_rank(asset_by_key[key]),
             )
+            deletion_candidates = neighbors[survivor] & unassigned
+            for deletion_candidate in deletion_candidates:
+                score, reason = candidates[tuple(sorted((survivor, deletion_candidate)))]
+                oriented.append(
+                    (
+                        survivor,
+                        deletion_candidate,
+                        score,
+                        f"automatic survivor; {reason}",
+                    )
+                )
+            unassigned.difference_update(deletion_candidates)
+            unassigned.remove(survivor)
     oriented.sort(key=lambda pair: (-pair[2], pair[0], pair[1]))
     return oriented
 

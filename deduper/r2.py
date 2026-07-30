@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-import json
-import time
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import boto3
 from boto3.s3.transfer import TransferConfig
 from botocore.client import Config as BotoConfig
-from botocore.exceptions import ClientError
 
 from .config import Config
+from .index_store import remove_index_keys
 from .models import Asset
 
 
@@ -111,56 +109,10 @@ class R2Store:
         return results, deleted_keys, index_error
 
     def remove_from_gallery_index(self, deleted_keys: set[str]) -> int:
-        for attempt in range(5):
-            try:
-                response = self.client.get_object(
-                    Bucket=self.config.bucket_name,
-                    Key=self.config.index_key,
-                )
-            except ClientError as exc:
-                code = str(exc.response.get("Error", {}).get("Code", ""))
-                if code in {"NoSuchKey", "404", "NotFound"}:
-                    return 0
-                raise
-
-            payload = json.loads(response["Body"].read().decode("utf-8"))
-            if isinstance(payload, dict) and isinstance(payload.get("items"), list):
-                original = payload["items"]
-                remaining = [
-                    item
-                    for item in original
-                    if not (isinstance(item, dict) and str(item.get("key", "")) in deleted_keys)
-                ]
-                payload["items"] = remaining
-                payload["count"] = len(remaining)
-                payload["generated_at"] = int(time.time())
-            elif isinstance(payload, list):
-                original = payload
-                remaining = [
-                    item
-                    for item in original
-                    if not (isinstance(item, dict) and str(item.get("key", "")) in deleted_keys)
-                ]
-                payload = remaining
-            else:
-                raise RuntimeError(f"{self.config.index_key} has an unsupported format")
-
-            removed = len(original) - len(remaining)
-            if not removed:
-                return 0
-            try:
-                self.client.put_object(
-                    Bucket=self.config.bucket_name,
-                    Key=self.config.index_key,
-                    Body=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
-                    ContentType="application/json",
-                    CacheControl="no-cache",
-                    IfMatch=str(response.get("ETag", "")).strip('"'),
-                )
-                return removed
-            except ClientError as exc:
-                code = str(exc.response.get("Error", {}).get("Code", ""))
-                if code not in {"PreconditionFailed", "412"} or attempt == 4:
-                    raise
-                time.sleep(0.2 * (attempt + 1))
-        raise RuntimeError("Gallery index changed repeatedly during cleanup")
+        removed, _ = remove_index_keys(
+            self.client,
+            self.config.bucket_name,
+            self.config.index_key,
+            deleted_keys,
+        )
+        return removed

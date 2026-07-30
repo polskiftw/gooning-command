@@ -397,8 +397,8 @@ The first scan:
 4. Saves only the key, size, type, hashes, and scan information in local SQLite.
 5. Deletes the temporary media file.
 6. Repeats for the next object.
-7. Applies the current slider setting to find duplicate groups.
-8. Selects one survivor per group and queues every other group member for NUKE.
+7. Applies the current slider setting to find duplicate matches.
+8. Builds safe groups in which every queued candidate directly matches its survivor.
 
 The first full scan is the long one. Later scans use the R2 key, ETag, size, and modified time to hash only new or changed objects.
 
@@ -448,7 +448,7 @@ The program uses a BK-tree for pHash and PDQ comparisons and banded frame lookup
 
 Exact SHA-256 duplicates are always targets, even at the strictest slider position.
 
-For each connected duplicate group, the app chooses one survivor. It prefers higher resolution, then longer duration, higher PDQ quality, and larger file size. The survivor is always shown on the left. Every other group member appears once on the right and is included in the next NUKE by default.
+For each set of connected duplicate matches, the app chooses the best available survivor and queues only its direct matches. It then repeats with any remaining members, so an indirect A-to-B-to-C chain can produce multiple safe groups instead of an unverified A-to-C deletion pair. It prefers higher resolution, then longer duration, higher PDQ quality, and larger file size. The survivor is always shown on the left, and each right-side candidate is included in the next NUKE by default.
 
 # 16. Single-screen review
 

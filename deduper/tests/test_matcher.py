@@ -126,6 +126,41 @@ class MatcherTests(unittest.TestCase):
         self.assertEqual({pair[0] for pair in pairs}, {"gallery/c.jpg"})
         self.assertEqual({pair[1] for pair in pairs}, {"gallery/a.jpg", "gallery/b.jpg"})
 
+    def test_transitive_chain_never_creates_an_indirect_deletion_pair(self) -> None:
+        pairs = acquire_pairs(
+            [
+                asset(
+                    "gallery/a.jpg",
+                    phash="0000000000000000",
+                    width=1920,
+                    height=1080,
+                ),
+                asset(
+                    "gallery/b.jpg",
+                    phash="00000000000003ff",
+                    width=1280,
+                    height=720,
+                ),
+                asset(
+                    "gallery/c.jpg",
+                    phash="00000000000fffff",
+                    width=640,
+                    height=480,
+                ),
+            ],
+            0,
+        )
+        direct_edges = {
+            frozenset(("gallery/a.jpg", "gallery/b.jpg")),
+            frozenset(("gallery/b.jpg", "gallery/c.jpg")),
+        }
+        self.assertEqual(len(pairs), 1)
+        self.assertTrue(all(frozenset(pair[:2]) in direct_edges for pair in pairs))
+        self.assertNotIn(
+            frozenset(("gallery/a.jpg", "gallery/c.jpg")),
+            {frozenset(pair[:2]) for pair in pairs},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

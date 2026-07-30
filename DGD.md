@@ -277,6 +277,21 @@ Flush:
 
 Flush does not delete media.
 
+# 8A. Audit the live index
+
+Run:
+
+```text
+GitHub repository
+→ Actions
+→ Audit Index
+→ Run workflow
+```
+
+Audit Index reads `gallery-index.json` and lists the R2 gallery without changing either one. It reports only aggregate numbers. It checks duplicate keys that could make certain media more likely, malformed rows, extension mistakes, count mismatches, indexed objects missing from R2, and R2 media missing from the index. It never prints media filenames or credentials.
+
+A green run ends with `AUDIT RESULT: CLEAN`. A red run ending with `AUDIT RESULT: PROBLEMS FOUND` means its aggregate report identified something that should be repaired or investigated.
+
 # 9. Worker
 
 The Worker routes are:

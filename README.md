@@ -43,9 +43,11 @@ The shared storage contract is:
 | `worker/style.css` | Browser viewer styling |
 | `worker/wrangler.jsonc` | Local Wrangler entrypoint, asset rules, limits, and bucket binding |
 | `worker/repair_index.py` | Adds unindexed R2 media to the gallery index |
+| `worker/audit_index.py` | Read-only aggregate integrity audit for the live index and bucket |
 | `deduper/` | Windows R2 scanner, matcher, review interface, and tests |
 | `.github/workflows/yoink.yml` | Scheduled and manual collector |
 | `.github/workflows/flush.yml` | Manual index repair |
+| `.github/workflows/audit-index.yml` | Manual read-only R2 index audit |
 | `.github/workflows/update-cf-web.yml` | Manual Worker deployment |
 | `.github/workflows/build-deduper.yml` | Tested Windows ZIP build and rolling release |
 | `requirements.txt` | Collector and repair dependencies |
@@ -133,6 +135,8 @@ Run **Actions → Yoink → Run workflow**, or allow its schedule to run:
 Yoink restores the archive database, selects the configured private exit node, downloads new media, restores the direct GitHub route, uploads media to R2, conditionally merges additions into `gallery-index.json`, and saves the archive.
 
 Run **Actions → Flush → Run workflow** after an interrupted upload may have placed media into R2 without updating the index. Flush adds missing valid objects to `gallery-index.json`; it never deletes media. Yoink, Flush, and the desktop deduper all use the same ETag-protected read/merge/write helper, so a concurrent writer must retry against the newest index instead of overwriting another writer's additions or removals.
+
+Run **Actions → Audit Index → Run workflow** to compare the live index with R2 without modifying either one. It reports aggregate counts for duplicate keys, malformed metadata, incorrect random weighting, missing objects, and unindexed objects. It never prints media filenames or credentials, and the run turns red when it finds an integrity problem.
 
 Run **Actions → update-cf-web → Run workflow** to publish Worker source changes. Repository commits do not automatically deploy the live Worker.
 

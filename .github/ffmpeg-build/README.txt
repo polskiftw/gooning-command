@@ -5,10 +5,14 @@ Run the workflow named "Build Custom FFmpeg" manually from GitHub Actions.
 
 SUCCESS
 -------
-Download the single artifact named:
+The stable build is uploaded immediately after it passes:
+  ffmpeg-stable-windows-x64-<run id>
+
+If master also passes, download:
   ffmpeg-custom-windows-x64-<run id>
 
-It contains one ZIP with:
+GitHub supplies the artifact as a ZIP. There is no second ZIP inside it.
+Opening the completed artifact once shows:
   stable\   latest stable FFmpeg release available when the workflow ran
   master\   current FFmpeg master commit available when the workflow ran
 
@@ -26,17 +30,23 @@ No PATH changes or installer are used.
 
 FAILURE
 -------
-Download the single artifact named:
+Download the artifact named:
   ffmpeg-build-diagnostics-<run id>
 
-Attach ffmpeg-build-diagnostics.zip to ChatGPT. It contains the build transcript,
-failed stage, environment information, source versions, configuration files,
-patches, and relevant dependency logs. Partial binaries are not packaged.
+GitHub supplies one ZIP whose files are immediately visible when opened. It contains
+the build transcripts, failed stage, environment information, exact source commits,
+configuration files, patches, MABS logs, and relevant dependency logs. There is no
+inner diagnostics ZIP.
+
+If stable passed before master failed or reached GitHub's time limit, the completed
+stable artifact remains downloadable.
 
 BUILD POLICY
 ------------
 * Windows x64, MinGW-w64 GCC, UCRT.
 * Fresh sources and clean compilation every run. No cache.
+* One compiler thread for the entire build.
+* Stable is built and uploaded before master begins.
 * Latest stable and current master.
 * Static-only selected runtime dependencies; no bundled codec DLLs.
 * Aggressive i7-14700KF tuning: -O3, Raptor Lake target, LTO.
@@ -51,6 +61,8 @@ BUILD POLICY
 
 IMPORTANT LIMITS
 ----------------
+GitHub-hosted jobs have a hard six-hour execution limit.
+
 NVIDIA driver DLLs and normal Windows system DLLs remain runtime requirements.
 They are supplied by Windows and the installed NVIDIA driver, not bundled beside
 FFmpeg.

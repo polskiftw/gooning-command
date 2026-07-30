@@ -2,6 +2,8 @@
 
 GParty is a self-contained media collector, Cloudflare R2 library, random browser viewer, and Windows duplicate-review tool.
 
+The browser viewer validates random-item API responses and automatically retries transient, timed-out, empty, or malformed responses without replacing the currently displayed media.
+
 ## Architecture
 
 ```text

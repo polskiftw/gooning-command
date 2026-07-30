@@ -27,7 +27,27 @@ const CONTENT_SECURITY_POLICY = [
 
 export default {
   async fetch(request, env, ctx) {
-    const response = await viewer.fetch(request, env, ctx);
+    let response;
+    try {
+      response = await viewer.fetch(request, env, ctx);
+    } catch (problem) {
+      console.error("Viewer request failed", problem);
+      const pathname = new URL(request.url).pathname;
+      response =
+        pathname === "/api/random"
+          ? new Response(
+              JSON.stringify({ error: "Random media is temporarily unavailable." }),
+              {
+                status: 503,
+                headers: {
+                  "content-type": "application/json; charset=utf-8",
+                  "cache-control": "no-store",
+                  "retry-after": "1",
+                },
+              },
+            )
+          : new Response("Service temporarily unavailable", { status: 503 });
+    }
     const headers = new Headers(response.headers);
 
     headers.set("x-robots-tag", ROBOTS_POLICY);

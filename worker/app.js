@@ -9,6 +9,122 @@
   let sizeMode = "fit";
   let showHint = true;
 
+  const RANDOM_ATTEMPTS = 3;
+  const RANDOM_TIMEOUT_MS = 12_000;
+
+  function wait(milliseconds) {
+    return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+  }
+
+  function requestProblem(message, retryable) {
+    const problem = new Error(message);
+    problem.retryable = retryable;
+    return problem;
+  }
+
+  function isTransientStatus(statusCode) {
+    return [408, 425, 429].includes(statusCode) || statusCode >= 500;
+  }
+
+  async function fetchRandomOnce(extension) {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), RANDOM_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(`/api/random?ext=${encodeURIComponent(extension)}`, {
+        cache: "no-store",
+        headers: { accept: "application/json" },
+        signal: controller.signal,
+      });
+      const contentType = response.headers.get("content-type") || "";
+      const body = await response.text();
+
+      if (!contentType.toLowerCase().includes("application/json")) {
+        throw requestProblem(
+          "The random-media service returned an invalid response.",
+          true,
+        );
+      }
+
+      let data;
+      try {
+        data = body ? JSON.parse(body) : null;
+      } catch {
+        throw requestProblem(
+          "The random-media service returned unreadable data.",
+          true,
+        );
+      }
+
+      if (!response.ok) {
+        const message =
+          data && typeof data.error === "string"
+            ? data.error
+            : `The random-media service returned error ${response.status}.`;
+        throw requestProblem(message, isTransientStatus(response.status));
+      }
+
+      if (
+        !data ||
+        typeof data.url !== "string" ||
+        typeof data.ext !== "string" ||
+        !Number.isFinite(Number(data.total))
+      ) {
+        throw requestProblem(
+          "The random-media service returned incomplete data.",
+          true,
+        );
+      }
+
+      let mediaUrl;
+      try {
+        mediaUrl = new URL(data.url, window.location.href);
+      } catch {
+        throw requestProblem(
+          "The random-media service returned an invalid media address.",
+          true,
+        );
+      }
+      if (
+        mediaUrl.origin !== window.location.origin ||
+        !mediaUrl.pathname.startsWith("/media/")
+      ) {
+        throw requestProblem(
+          "The random-media service returned an unsafe media address.",
+          true,
+        );
+      }
+
+      return {
+        ...data,
+        url: `${mediaUrl.pathname}${mediaUrl.search}`,
+      };
+    } catch (problem) {
+      if (problem && problem.retryable !== undefined) throw problem;
+      if (problem && problem.name === "AbortError") {
+        throw requestProblem("The random-media request timed out.", true);
+      }
+      throw requestProblem("The random-media service could not be reached.", true);
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+
+  async function fetchRandom(extension) {
+    let lastProblem;
+    for (let attempt = 1; attempt <= RANDOM_ATTEMPTS; attempt += 1) {
+      try {
+        return await fetchRandomOnce(extension);
+      } catch (problem) {
+        lastProblem = problem;
+        if (!problem.retryable || attempt === RANDOM_ATTEMPTS) throw problem;
+        status.textContent = `Retrying… ${attempt + 1}/${RANDOM_ATTEMPTS}`;
+        await wait(300 * attempt);
+      }
+    }
+    throw lastProblem;
+  }
+
   function intrinsicSize(media) {
     return media.tagName === "VIDEO"
       ? { width: media.videoWidth, height: media.videoHeight }
@@ -73,11 +189,7 @@
     status.textContent = "Loading…";
 
     try {
-      const response = await fetch(`/api/random?ext=${encodeURIComponent(filter.value)}`, {
-        cache: "no-store",
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Could not load media.");
+      const data = await fetchRandom(filter.value);
 
       const ext = String(data.ext || "").toLowerCase();
       const media = ["mp4", "m4v", "webm"].includes(ext)
@@ -122,7 +234,7 @@
       }
       if (media.tagName === "VIDEO") media.play().catch(() => {});
     } catch (problem) {
-      error.textContent = problem.message;
+      error.textContent = `${problem.message} Tap Next random to try again.`;
       error.style.display = "block";
       status.textContent = "Error";
     } finally {

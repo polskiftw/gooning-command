@@ -291,6 +291,8 @@ The Worker reads `gallery-index.json` through `env.MEDIA_BUCKET`. It only accept
 
 The Worker's in-memory index cache lasts 60 seconds. A corrected index may therefore take up to one minute to appear in the viewer.
 
+The viewer validates every random-item response before replacing the current media. It automatically retries temporary server failures, timeouts, empty replies, malformed JSON, and invalid media addresses up to three times. If all attempts fail, the current media stays visible and the viewer shows a useful retry message instead of Safari's generic parsing error.
+
 # 10. Publish Worker changes
 
 Run:

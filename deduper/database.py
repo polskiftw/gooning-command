@@ -1,0 +1,405 @@
+from __future__ import annotations
+
+import sqlite3
+import threading
+from collections.abc import Iterable, Iterator
+from pathlib import Path
+
+from .models import Asset, Pair
+
+
+SCHEMA = """
+PRAGMA journal_mode = WAL;
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS assets (
+    key TEXT PRIMARY KEY,
+    size INTEGER NOT NULL,
+    etag TEXT NOT NULL DEFAULT '',
+    last_modified TEXT NOT NULL DEFAULT '',
+    media_type TEXT NOT NULL,
+    extension TEXT NOT NULL,
+    sha256 TEXT,
+    phash TEXT,
+    crop_hashes TEXT,
+    pdq_hash TEXT,
+    pdq_quality INTEGER,
+    vpdq_hashes TEXT,
+    width INTEGER,
+    height INTEGER,
+    duration REAL,
+    scan_error TEXT,
+    scanned_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    deleted INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS pairs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    left_key TEXT NOT NULL REFERENCES assets(key),
+    right_key TEXT NOT NULL REFERENCES assets(key),
+    similarity REAL NOT NULL,
+    reason TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    decision TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    reviewed_at TEXT,
+    UNIQUE(left_key, right_key)
+);
+
+CREATE TABLE IF NOT EXISTS deletion_queue (
+    key TEXT PRIMARY KEY REFERENCES assets(key),
+    pair_id INTEGER REFERENCES pairs(id),
+    queued_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS deletion_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    deleted_key TEXT NOT NULL,
+    survivor_key TEXT,
+    pair_id INTEGER,
+    size INTEGER NOT NULL DEFAULT 0,
+    deleted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    result TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS index_cleanup_queue (
+    key TEXT PRIMARY KEY,
+    queued_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS assets_sha256_idx ON assets(sha256);
+CREATE INDEX IF NOT EXISTS assets_phash_idx ON assets(phash);
+CREATE INDEX IF NOT EXISTS pairs_status_idx ON pairs(status, similarity DESC);
+"""
+
+
+class Database:
+    def __init__(self, path: Path):
+        self.path = path
+        self._lock = threading.RLock()
+        self.connection = sqlite3.connect(path, check_same_thread=False)
+        self.connection.row_factory = sqlite3.Row
+        with self.connection:
+            self.connection.executescript(SCHEMA)
+
+    def close(self) -> None:
+        with self._lock:
+            self.connection.close()
+
+    def upsert_inventory(self, assets: Iterable[Asset]) -> tuple[int, int]:
+        new_count = changed_count = 0
+        with self._lock, self.connection:
+            for asset in assets:
+                existing = self.connection.execute(
+                    "SELECT size, etag, last_modified FROM assets WHERE key = ?", (asset.key,)
+                ).fetchone()
+                if existing is None:
+                    self.connection.execute(
+                        """
+                        INSERT INTO assets
+                            (key, size, etag, last_modified, media_type, extension)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            asset.key,
+                            asset.size,
+                            asset.etag,
+                            asset.last_modified,
+                            asset.media_type,
+                            asset.extension,
+                        ),
+                    )
+                    new_count += 1
+                elif (
+                    existing["size"] != asset.size
+                    or existing["etag"] != asset.etag
+                    or existing["last_modified"] != asset.last_modified
+                ):
+                    self.connection.execute(
+                        """
+                        UPDATE assets
+                        SET size = ?, etag = ?, last_modified = ?, media_type = ?, extension = ?,
+                            sha256 = NULL, phash = NULL, crop_hashes = NULL, pdq_hash = NULL,
+                            pdq_quality = NULL, vpdq_hashes = NULL, width = NULL, height = NULL,
+                            duration = NULL, scan_error = NULL, deleted = 0
+                        WHERE key = ?
+                        """,
+                        (
+                            asset.size,
+                            asset.etag,
+                            asset.last_modified,
+                            asset.media_type,
+                            asset.extension,
+                            asset.key,
+                        ),
+                    )
+                    changed_count += 1
+                else:
+                    self.connection.execute("UPDATE assets SET deleted = 0 WHERE key = ?", (asset.key,))
+        return new_count, changed_count
+
+    def mark_missing_deleted(self, live_keys: set[str]) -> int:
+        with self._lock, self.connection:
+            rows = self.connection.execute("SELECT key FROM assets WHERE deleted = 0").fetchall()
+            missing = [row["key"] for row in rows if row["key"] not in live_keys]
+            self.connection.executemany("UPDATE assets SET deleted = 1 WHERE key = ?", ((key,) for key in missing))
+            self.connection.executemany("DELETE FROM deletion_queue WHERE key = ?", ((key,) for key in missing))
+        return len(missing)
+
+    def assets_needing_hashes(self) -> Iterator[Asset]:
+        with self._lock:
+            rows = self.connection.execute(
+                """
+                SELECT * FROM assets
+                WHERE deleted = 0 AND sha256 IS NULL
+                ORDER BY key
+                """
+            ).fetchall()
+        for row in rows:
+            yield self._asset_from_row(row)
+
+    def save_hashes(self, asset: Asset) -> None:
+        with self._lock, self.connection:
+            self.connection.execute(
+                """
+                UPDATE assets SET
+                    sha256 = ?, phash = ?, crop_hashes = ?, pdq_hash = ?, pdq_quality = ?,
+                    vpdq_hashes = ?, width = ?, height = ?, duration = ?, scan_error = ?,
+                    scanned_at = CURRENT_TIMESTAMP
+                WHERE key = ?
+                """,
+                (
+                    asset.sha256,
+                    asset.phash,
+                    asset.crop_hashes,
+                    asset.pdq_hash,
+                    asset.pdq_quality,
+                    asset.vpdq_hashes,
+                    asset.width,
+                    asset.height,
+                    asset.duration,
+                    asset.scan_error,
+                    asset.key,
+                ),
+            )
+
+    def all_hashed_assets(self) -> list[Asset]:
+        with self._lock:
+            rows = self.connection.execute(
+                "SELECT * FROM assets WHERE deleted = 0 AND sha256 IS NOT NULL"
+            ).fetchall()
+        return [self._asset_from_row(row) for row in rows]
+
+    def replace_pairs(self, pairs: Iterable[tuple[str, str, float, str]]) -> int:
+        normalized: dict[tuple[str, str], tuple[float, str]] = {}
+        for left, right, similarity, reason in pairs:
+            key = tuple(sorted((left, right)))
+            current = normalized.get(key)
+            if current is None or similarity > current[0]:
+                normalized[key] = (similarity, reason)
+
+        with self._lock, self.connection:
+            self.connection.execute("DELETE FROM pairs WHERE status = 'pending'")
+            for (left, right), (similarity, reason) in normalized.items():
+                self.connection.execute(
+                    """
+                    INSERT INTO pairs (left_key, right_key, similarity, reason)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(left_key, right_key) DO UPDATE SET
+                        similarity = excluded.similarity,
+                        reason = excluded.reason
+                    WHERE pairs.status = 'pending'
+                    """,
+                    (left, right, similarity, reason),
+                )
+        return len(normalized)
+
+    def pending_pairs(self) -> list[Pair]:
+        with self._lock:
+            rows = self.connection.execute(
+                """
+                SELECT * FROM pairs
+                WHERE status = 'pending'
+                ORDER BY similarity DESC, id
+                """
+            ).fetchall()
+        return [self._pair_from_row(row) for row in rows]
+
+    def reviewed_pairs(self) -> list[Pair]:
+        with self._lock:
+            rows = self.connection.execute(
+                "SELECT * FROM pairs WHERE status = 'reviewed' ORDER BY reviewed_at, id"
+            ).fetchall()
+        return [self._pair_from_row(row) for row in rows]
+
+    def decide_pair(self, pair_id: int, decision: str, delete_key: str | None = None) -> None:
+        if decision not in {"delete_left", "delete_right", "skip"}:
+            raise ValueError(f"Unsupported decision: {decision}")
+        with self._lock, self.connection:
+            self.connection.execute(
+                """
+                UPDATE pairs
+                SET status = 'reviewed', decision = ?, reviewed_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (decision, pair_id),
+            )
+            self._rebuild_deletion_queue()
+
+    def undo_pair(self, pair_id: int) -> None:
+        with self._lock, self.connection:
+            self.connection.execute(
+                """
+                UPDATE pairs SET status = 'pending', decision = NULL, reviewed_at = NULL
+                WHERE id = ?
+                """,
+                (pair_id,),
+            )
+            self._rebuild_deletion_queue()
+
+    def queued_deletions(self) -> list[tuple[str, int | None, int]]:
+        with self._lock:
+            rows = self.connection.execute(
+                """
+                SELECT q.key, q.pair_id, a.size
+                FROM deletion_queue q JOIN assets a ON a.key = q.key
+                WHERE a.deleted = 0
+                ORDER BY q.queued_at, q.key
+                """
+            ).fetchall()
+        return [(row["key"], row["pair_id"], row["size"]) for row in rows]
+
+    def record_deletions(self, results: Iterable[tuple[str, int | None, int, str]]) -> None:
+        with self._lock, self.connection:
+            for key, pair_id, size, result in results:
+                survivor = None
+                if pair_id is not None:
+                    row = self.connection.execute(
+                        "SELECT left_key, right_key FROM pairs WHERE id = ?", (pair_id,)
+                    ).fetchone()
+                    if row:
+                        survivor = row["right_key"] if row["left_key"] == key else row["left_key"]
+                self.connection.execute(
+                    """
+                    INSERT INTO deletion_log
+                        (deleted_key, survivor_key, pair_id, size, result)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (key, survivor, pair_id, size, result),
+                )
+                if result == "deleted":
+                    self.connection.execute("UPDATE assets SET deleted = 1 WHERE key = ?", (key,))
+                    self.connection.execute("DELETE FROM deletion_queue WHERE key = ?", (key,))
+
+    def queue_index_cleanup(self, keys: Iterable[str]) -> None:
+        with self._lock, self.connection:
+            self.connection.executemany(
+                "INSERT OR IGNORE INTO index_cleanup_queue (key) VALUES (?)",
+                ((key,) for key in keys),
+            )
+
+    def pending_index_cleanup(self) -> set[str]:
+        with self._lock:
+            rows = self.connection.execute("SELECT key FROM index_cleanup_queue").fetchall()
+        return {row["key"] for row in rows}
+
+    def clear_index_cleanup(self, keys: Iterable[str]) -> None:
+        with self._lock, self.connection:
+            self.connection.executemany(
+                "DELETE FROM index_cleanup_queue WHERE key = ?",
+                ((key,) for key in keys),
+            )
+
+    def counts(self) -> dict[str, int]:
+        with self._lock:
+            row = self.connection.execute(
+                """
+                SELECT
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN deleted = 0 THEN 1 ELSE 0 END) AS live,
+                    SUM(CASE WHEN deleted = 0 AND sha256 IS NOT NULL THEN 1 ELSE 0 END) AS hashed,
+                    SUM(CASE WHEN scan_error IS NOT NULL THEN 1 ELSE 0 END) AS errors
+                FROM assets
+                """
+            ).fetchone()
+            pending = self.connection.execute(
+                "SELECT COUNT(*) FROM pairs WHERE status = 'pending'"
+            ).fetchone()[0]
+            queued = self.connection.execute("SELECT COUNT(*) FROM deletion_queue").fetchone()[0]
+        return {
+            "total": int(row["total"] or 0),
+            "live": int(row["live"] or 0),
+            "hashed": int(row["hashed"] or 0),
+            "errors": int(row["errors"] or 0),
+            "pending": int(pending),
+            "queued": int(queued),
+        }
+
+    def asset(self, key: str) -> Asset | None:
+        with self._lock:
+            row = self.connection.execute("SELECT * FROM assets WHERE key = ?", (key,)).fetchone()
+        return self._asset_from_row(row) if row else None
+
+    def random_asset_key(self, excluding: set[str] | None = None) -> str | None:
+        excluding = excluding or set()
+        with self._lock:
+            rows = self.connection.execute(
+                "SELECT key FROM assets WHERE deleted = 0 AND scan_error IS NULL ORDER BY RANDOM() LIMIT 12"
+            ).fetchall()
+        return next((row["key"] for row in rows if row["key"] not in excluding), None)
+
+    def _rebuild_deletion_queue(self) -> None:
+        self.connection.execute("DELETE FROM deletion_queue")
+        rows = self.connection.execute(
+            """
+            SELECT id, left_key, right_key, decision
+            FROM pairs
+            WHERE status = 'reviewed' AND decision IN ('delete_left', 'delete_right')
+            ORDER BY reviewed_at, id
+            """
+        ).fetchall()
+        for row in rows:
+            key = row["left_key"] if row["decision"] == "delete_left" else row["right_key"]
+            self.connection.execute(
+                "INSERT OR IGNORE INTO deletion_queue (key, pair_id) VALUES (?, ?)",
+                (key, row["id"]),
+            )
+
+    @staticmethod
+    def _asset_from_row(row: sqlite3.Row) -> Asset:
+        return Asset(
+            key=row["key"],
+            size=row["size"],
+            etag=row["etag"],
+            last_modified=row["last_modified"],
+            media_type=row["media_type"],
+            extension=row["extension"],
+            sha256=row["sha256"],
+            phash=row["phash"],
+            crop_hashes=row["crop_hashes"],
+            pdq_hash=row["pdq_hash"],
+            pdq_quality=row["pdq_quality"],
+            vpdq_hashes=row["vpdq_hashes"],
+            width=row["width"],
+            height=row["height"],
+            duration=row["duration"],
+            scan_error=row["scan_error"],
+            deleted=bool(row["deleted"]),
+        )
+
+    @staticmethod
+    def _pair_from_row(row: sqlite3.Row) -> Pair:
+        return Pair(
+            id=row["id"],
+            left_key=row["left_key"],
+            right_key=row["right_key"],
+            similarity=row["similarity"],
+            reason=row["reason"],
+            status=row["status"],
+            decision=row["decision"],
+        )

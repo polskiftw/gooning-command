@@ -1,7 +1,17 @@
 {
-  "name": "gooning-party-fresh",
-  "main": "hardened-worker.js",
-  "compatibility_date": "2026-07-26",
+  "name": "gparty",
+  "main": "worker.js",
+  "compatibility_date": "2026-07-28",
+  "rules": [
+    {
+      "type": "Text",
+      "globs": ["**/app.js", "**/*.css"],
+      "fallthrough": true
+    }
+  ],
+  "limits": {
+    "cpu_ms": 300000
+  },
   "r2_buckets": [
     {
       "binding": "MEDIA_BUCKET",

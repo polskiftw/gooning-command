@@ -32,7 +32,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          PRIVATE_SETTINGS="${RUNNER_TEMP}/gooning-party-private-settings.json"
+          PRIVATE_SETTINGS="${RUNNER_TEMP}/gparty-private-settings.json"
 
           python - <<'PY'
           import json
@@ -40,7 +40,7 @@ jobs:
           from pathlib import Path
 
           source_path = Path("settings.json")
-          output_path = Path(os.environ["RUNNER_TEMP"]) / "gooning-party-private-settings.json"
+          output_path = Path(os.environ["RUNNER_TEMP"]) / "gparty-private-settings.json"
 
           settings = json.loads(source_path.read_text(encoding="utf-8"))
           sources = list(settings.get("sources", []))
@@ -120,7 +120,7 @@ jobs:
       - name: Restore tiny download history directly from R2
         env:
           APP_MODE: restore
-          DATA_DIR: ${{ runner.temp }}/gooning-party-data
+          DATA_DIR: ${{ runner.temp }}/gparty-data
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -134,7 +134,7 @@ jobs:
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:github-actions
 
-      - name: Route downloads through the Flint 2
+      - name: Route downloads through the private exit node
         shell: bash
         env:
           TS_EXIT_NODE_IP: ${{ secrets.TS_EXIT_NODE_IP }}
@@ -146,7 +146,7 @@ jobs:
             exit 1
           fi
 
-          echo "Selecting the Flint 2 exit node..."
+          echo "Selecting the private exit node..."
           sudo tailscale set --exit-node="${TS_EXIT_NODE_IP}" --exit-node-allow-lan-access=false
 
           echo "Waiting for the home route to become active..."
@@ -171,16 +171,16 @@ jobs:
           fi
 
           echo "HOME_EXIT_IP=${HOME_IP}" >> "$GITHUB_ENV"
-          echo "Home routing is active. Reddit and media downloads will use the Flint 2."
+          echo "Private routing is active. Reddit and media downloads will use the configured exit node."
 
       - name: Download all new media through the home IP
         env:
           APP_MODE: download
-          DATA_DIR: ${{ runner.temp }}/gooning-party-data
+          DATA_DIR: ${{ runner.temp }}/gparty-data
           REDDIT_COOKIES_BASE64: ${{ secrets.REDDIT_COOKIES_BASE64 }}
         run: python app.py
 
-      - name: Stop using the Flint 2 before R2 uploads
+      - name: Stop using the private exit node before R2 uploads
         shell: bash
         run: |
           set -euo pipefail
@@ -205,16 +205,16 @@ jobs:
           echo "Direct-route check completed; detected addresses remain masked."
 
           if [ -z "$DIRECT_IP" ] || [ "$DIRECT_IP" != "$BEFORE_TAILSCALE_IP" ]; then
-            echo "The direct GitHub route was not restored. Refusing to upload media to R2 through the home tunnel."
+            echo "The direct GitHub route was not restored. Refusing to upload media to R2 through the private tunnel."
             exit 1
           fi
 
-          echo "Direct GitHub routing is restored. R2 uploads will bypass the Flint 2."
+          echo "Direct GitHub routing is restored. R2 uploads will bypass the private exit node."
 
       - name: Upload all downloaded media directly to R2
         env:
           APP_MODE: upload
-          DATA_DIR: ${{ runner.temp }}/gooning-party-data
+          DATA_DIR: ${{ runner.temp }}/gparty-data
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}

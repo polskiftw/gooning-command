@@ -1,11 +1,6 @@
 # GParty
 
-GParty is a self-contained media collection and viewing project built on GitHub Actions, Cloudflare R2, and Cloudflare Workers.
-
-The repository contains both parts of the system:
-
-- A Python collector that retrieves new media from configured Reddit sources and stores it in R2.
-- A Cloudflare Worker that reads the R2 gallery index and serves the browser viewer.
+GParty is a self-contained media collector, Cloudflare R2 library, random browser viewer, and Windows duplicate-review tool.
 
 ## Architecture
 
@@ -21,83 +16,93 @@ GitHub Actions: Yoink
                  |
                  v
           Cloudflare R2
-                 |
-                 v
-      Cloudflare Worker viewer
+            /        \
+           v          v
+ Worker random viewer  Windows GParty Deduper
 ```
 
-The collector and Worker share two storage conventions:
+The shared storage contract is:
 
-- Media objects are stored under `gallery/`.
-- The gallery manifest is stored as `gallery-index.json`.
+| Purpose | Value |
+|---|---|
+| Media prefix | `gallery/` |
+| Gallery index | `gallery-index.json` |
+| Worker R2 binding | `MEDIA_BUCKET` |
+| Bucket selector | `R2_BUCKET_NAME` |
 
 ## Repository layout
 
 | Path | Purpose |
 |---|---|
-| `app.py` | Collector, download history, R2 uploads, and index generation |
-| `worker/repair_index.py` | Repairs index entries for media already present in R2 |
-| `worker/worker.js` | Cloudflare Worker and browser viewer |
-| `settings.json` | Collector sources, limits, delays, extensions, and R2 prefix |
-| `.github/workflows/yoink.yml` | Scheduled and manual collection workflow |
-| `.github/workflows/flush.yml` | Manual R2 index repair workflow |
-| `.github/workflows/update-cf-web.yml` | Manual Cloudflare Worker deployment workflow |
-| `requirements.txt` | Python dependencies |
-| `DGD.md` | Complete alternate setup and maintenance guide |
+| `app.py` | Collector, download history, R2 upload, and index generation |
+| `settings.json` | Collector limits, delays, formats, and fallback sources |
+| `worker/worker.js` | Cloudflare Worker routes and R2 media streaming |
+| `worker/app.js` | Browser viewer behavior |
+| `worker/style.css` | Browser viewer styling |
+| `worker/wrangler.jsonc` | Local Wrangler entrypoint, asset rules, limits, and bucket binding |
+| `worker/repair_index.py` | Adds unindexed R2 media to the gallery index |
+| `deduper/` | Windows R2 scanner, matcher, review interface, and tests |
+| `.github/workflows/yoink.yml` | Scheduled and manual collector |
+| `.github/workflows/flush.yml` | Manual index repair |
+| `.github/workflows/update-cf-web.yml` | Manual Worker deployment |
+| `.github/workflows/build-deduper.yml` | Manual Windows ZIP build |
+| `requirements.txt` | Collector and repair dependencies |
 
-## Requirements
+## Collector requirements
 
-- A Cloudflare account with an R2 bucket and a Worker
-- A GitHub repository with Actions enabled
-- A Tailscale exit node reachable by GitHub Actions
-- Reddit browser cookies in Netscape `cookies.txt` format
+- Cloudflare R2 bucket and API credentials
+- Cloudflare Worker and deployment token
+- GitHub Actions
+- A Tailscale exit node available to GitHub Actions
+- Reddit cookies in Netscape `cookies.txt` format
 
 ## GitHub Actions secrets
 
-### Collector and repair workflows
+Collector, Flush, and R2:
 
 ```text
 R2_ACCOUNT_ID
 R2_ACCESS_KEY_ID
 R2_SECRET_ACCESS_KEY
 R2_BUCKET_NAME
+```
+
+Yoink routing and Reddit:
+
+```text
 TS_OAUTH_CLIENT_ID
 TS_OAUTH_SECRET
 TS_EXIT_NODE_IP
 REDDIT_COOKIES_BASE64
-```
-
-The first four configured sources can be privately replaced at runtime with:
-
-```text
 REDDIT_SOURCE_1
 REDDIT_SOURCE_2
 REDDIT_SOURCE_3
 REDDIT_SOURCE_4
 ```
 
-Each source override accepts either a subreddit name or a complete Reddit `/new/` URL.
+Each `REDDIT_SOURCE_*` value may be a subreddit name or a complete Reddit `/new/` URL. These runtime overrides keep the real source list out of the committed `settings.json`.
 
-### Worker deployment
+Worker deployment:
 
 ```text
 CLOUDFLARE_API_TOKEN
 CLOUDFLARE_ACCOUNT_ID
+CLOUDFLARE_WORKER_NAME
 R2_BUCKET_NAME
 ```
 
-`R2_BUCKET_NAME` is shared by the collector and Worker deployment. The deployment workflow binds that bucket to the Worker as `MEDIA_BUCKET`, matching `env.MEDIA_BUCKET` in `worker/worker.js`.
+The Worker also requires its runtime `CONTACT_EMAIL` secret.
 
-## Configure the collector
+## Collector configuration
 
-Edit `settings.json`.
+`settings.json` contains:
 
 ```json
 {
   "sources": [
-    "https://www.reddit.com/r/example1/new/",
-    "https://www.reddit.com/r/example2/new/",
-    "https://www.reddit.com/r/example3/new/"
+    "placeholder1",
+    "placeholder2",
+    "placeholder3"
   ],
   "browser_user_agent": "Mozilla/5.0 ...",
   "posts_per_subreddit_per_scan": 100,
@@ -113,70 +118,108 @@ Edit `settings.json`.
 }
 ```
 
-Keep `r2_gallery_prefix` set to `gallery/` unless the same prefix is also changed in the Worker and repair logic.
+The private `REDDIT_SOURCE_*` secrets replace the placeholder entries before `app.py` runs. Keep `r2_gallery_prefix` aligned with the Worker, Flush, and deduper configuration.
 
-## Run the collector
+## Collector operation
 
-Open **Actions → Yoink → Run workflow**.
-
-Yoink restores the download archive, connects through the configured Tailscale exit node, downloads new media, restores the direct GitHub route, uploads media to R2, updates `gallery-index.json`, and saves the archive database.
-
-The workflow also runs on this schedule:
+Run **Actions → Yoink → Run workflow**, or allow its schedule to run:
 
 ```text
 3,18,33,48 * * * *
 ```
 
-## Repair the gallery index
+Yoink restores the archive database, selects the configured private exit node, downloads new media, restores the direct GitHub route, uploads media to R2, writes `gallery-index.json`, and saves the archive.
 
-Open **Actions → Flush → Run workflow** after an interrupted upload phase may have placed media in R2 before the index was updated.
+Run **Actions → Flush → Run workflow** after an interrupted upload may have placed media into R2 without updating the index. Flush adds missing valid objects to `gallery-index.json`; it never deletes media.
 
-Flush scans valid objects under `gallery/` and adds missing entries to `gallery-index.json`.
+Run **Actions → update-cf-web → Run workflow** to publish Worker source changes. Repository commits do not automatically deploy the live Worker.
 
-## Deploy the Worker
+## Windows GParty Deduper
 
-1. Create the Worker in Cloudflare or identify the existing Worker name.
-2. Add the Worker deployment secrets listed above.
-3. Open **Actions → update-cf-web → Run workflow**.
-4. Enter the exact existing Worker name.
+The deduper works directly against R2. It temporarily downloads one object at a time for hashing and previews, but it never keeps a second permanent copy of the media library.
 
-The workflow creates a temporary Wrangler configuration with:
+It records these fingerprints in a local SQLite database:
 
-```toml
-main = "worker/worker.js"
+- SHA-256 for byte-identical files
+- pHash for visually similar stills and representative video frames
+- crop-resistant segmented hashes for crops, borders, and reframing
+- Meta PDQ hashes for robust still-image comparison
+- vPDQ-style sampled PDQ frame sets for GIF and video comparison
 
-[[r2_buckets]]
-binding = "MEDIA_BUCKET"
-bucket_name = "<R2_BUCKET_NAME>"
+### Build the Windows ZIP
+
+1. Open **Actions → Build GParty Deduper**.
+2. Select **Run workflow**.
+3. Open the completed run.
+4. Download the `GParty-Deduper-Windows` artifact.
+5. Extract `GParty-Deduper-Windows.zip`.
+
+The workflow runs the test suite and builds the portable application on a real Windows runner with PyInstaller.
+
+### Configure the deduper
+
+Copy `config.example.txt` to `config.txt` beside `GParty Deduper.exe`:
+
+```text
+R2_ACCOUNT_ID=
+R2_ACCESS_KEY_ID=
+R2_SECRET_ACCESS_KEY=
+R2_BUCKET_NAME=
+
+GALLERY_PREFIX=gallery/
+INDEX_KEY=gallery-index.json
+ALLOW_DELETE=NO
+VIDEO_SAMPLE_SECONDS=1
+MAX_VIDEO_FRAMES=300
+PREVIEW_CACHE_MB=750
 ```
 
-Deployment is manual. Repository commits do not automatically deploy the Worker.
+Use an R2 token with object read/list access while testing. NUKE remains locked until the token has delete/write access and `ALLOW_DELETE=YES`.
 
-## Shared storage contract
+`config.txt`, the SQLite database, and preview cache are ignored by Git. The program stores them beside the EXE under `data/`.
 
-The current wiring is:
+### Deduper workflow
 
-| Component | Value |
-|---|---|
-| Collector index key | `gallery-index.json` |
-| Worker index key | `gallery-index.json` |
-| Collector media prefix | `gallery/` |
-| Worker accepted media prefix | `gallery/` |
-| Worker code binding | `MEDIA_BUCKET` |
-| Deployment binding | `MEDIA_BUCKET` |
-| Bucket selector | `R2_BUCKET_NAME` |
+1. **SCAN** lists R2, hashes new or changed objects, and remembers unchanged objects.
+2. Adjust the 100-position slider. Left is looser; right is stricter.
+3. **ACQUIRE TARGETS** creates suspected duplicate pairs.
+4. Review each pair with **DELETE LEFT**, **SKIP**, or **DELETE RIGHT**.
+5. **BACK** undoes the latest review decision. **FORWARD** moves without deciding.
+6. **NUKE** deletes queued objects and removes their keys from `gallery-index.json`.
 
-These values must remain aligned.
+DELETE buttons only queue a decision. NUKE performs the R2 deletion without an additional confirmation dialog. If index cleanup fails after an object deletion, the app saves that cleanup locally and retries it the next time NUKE runs.
+
+The surviving object remains eligible for comparison with other candidates. The third looping preview is a random live object and is not part of the current pair.
+
+## Local deduper development
+
+Python 3.12:
+
+```text
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r deduper\requirements-build.txt
+python -m unittest discover -s deduper\tests -v
+python -m deduper.main
+```
+
+Build locally on Windows:
+
+```text
+cd deduper
+pyinstaller --clean --noconfirm GPartyDeduper.spec
+```
 
 ## Built with
 
-GParty relies on these open-source Python projects:
-
-- [gallery-dl](https://github.com/mikf/gallery-dl) — media extraction and download handling.
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp) — video and media extraction support.
-- [Boto3](https://github.com/boto/boto3) — Python access to Cloudflare R2 through its S3-compatible API.
-
-Their exact installed versions are defined in `requirements.txt`.
+- [gallery-dl](https://github.com/mikf/gallery-dl)
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp)
+- [Boto3](https://github.com/boto/boto3)
+- [ImageHash](https://github.com/JohannesBuchner/imagehash)
+- [PDQ Hash Python](https://github.com/faustomorales/pdqhash-python), based on Meta PDQ
+- [OpenCV](https://opencv.org/)
+- [Pillow](https://python-pillow.org/)
+- [PyInstaller](https://pyinstaller.org/)
 
 ## License
 

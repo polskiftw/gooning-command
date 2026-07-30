@@ -1,0 +1,75 @@
+name: Build Custom FFmpeg
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  BUILD_ROOT: C:\ffb
+  OUT_ROOT: ${{ github.workspace }}\ffmpeg-output
+  DIAG_ROOT: ${{ github.workspace }}\ffmpeg-diagnostics
+
+jobs:
+  build:
+    name: Windows x64 static FFmpeg
+    runs-on: windows-2025
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout workflow files
+        uses: actions/checkout@v4
+
+      - name: Prepare clean workspace
+        shell: pwsh
+        run: |
+          Remove-Item -LiteralPath $env:BUILD_ROOT -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $env:OUT_ROOT -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $env:DIAG_ROOT -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $env:BUILD_ROOT, $env:OUT_ROOT, $env:DIAG_ROOT | Out-Null
+
+      - name: Build stable and master from fresh source
+        id: compile
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          & "${{ github.workspace }}\.github\ffmpeg-build\build.ps1"
+          exit $LASTEXITCODE
+
+      - name: Package successful build
+        if: steps.compile.outcome == 'success'
+        shell: pwsh
+        run: |
+          & "${{ github.workspace }}\.github\ffmpeg-build\package-success.ps1"
+
+      - name: Package diagnostics
+        if: steps.compile.outcome != 'success'
+        shell: pwsh
+        run: |
+          & "${{ github.workspace }}\.github\ffmpeg-build\package-diagnostics.ps1"
+
+      - name: Upload FFmpeg package
+        if: steps.compile.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-custom-windows-x64-${{ github.run_id }}
+          path: ffmpeg-custom-windows-x64-*.zip
+          retention-days: 1
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Upload one diagnostics ZIP
+        if: steps.compile.outcome != 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-build-diagnostics-${{ github.run_id }}
+          path: ffmpeg-build-diagnostics.zip
+          retention-days: 1
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Mark failed build as failed
+        if: steps.compile.outcome != 'success'
+        shell: pwsh
+        run: throw 'The FFmpeg build failed. Download the single diagnostics artifact.'

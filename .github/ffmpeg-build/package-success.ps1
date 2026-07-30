@@ -1,9 +1,16 @@
+param(
+    [ValidateSet('stable','master','all')]
+    [string]$Variant = 'all'
+)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $outRoot = $env:OUT_ROOT
 if (-not (Test-Path $outRoot)) { throw "Output directory does not exist: $outRoot" }
-foreach ($folder in 'stable','master') {
+$folders = if ($Variant -eq 'all') { @('stable','master') } else { @($Variant) }
+
+foreach ($folder in $folders) {
     $path = Join-Path $outRoot $folder
     if (-not (Test-Path $path)) { throw "Missing completed build folder: $folder" }
     foreach ($exe in 'ffmpeg.exe','ffprobe.exe','ffplay.exe') {
@@ -16,11 +23,4 @@ foreach ($folder in 'stable','master') {
     Set-Content -Path (Join-Path $path 'SHA256SUMS.txt') -Value $hashLines -Encoding ASCII
 }
 
-$date = Get-Date -Format 'yyyy-MM-dd'
-$zipName = "ffmpeg-custom-windows-x64-$date.zip"
-$zipPath = Join-Path $env:GITHUB_WORKSPACE $zipName
-Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
-Compress-Archive -Path (Join-Path $outRoot '*') -DestinationPath $zipPath -CompressionLevel Optimal
-$zipHash = Get-FileHash -Algorithm SHA256 -Path $zipPath
-Set-Content -Path "$zipPath.sha256.txt" -Value "$($zipHash.Hash.ToLowerInvariant())  $zipName" -Encoding ASCII
-Write-Host "Created $zipPath"
+Write-Host "Prepared direct artifact contents for: $($folders -join ', ')"

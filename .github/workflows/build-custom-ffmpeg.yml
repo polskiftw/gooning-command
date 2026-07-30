@@ -28,6 +28,8 @@ jobs:
           Remove-Item -LiteralPath $env:OUT_ROOT -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item -LiteralPath $env:DIAG_ROOT -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path $env:BUILD_ROOT, $env:OUT_ROOT, $env:DIAG_ROOT | Out-Null
+          $builder = "${{ github.workspace }}\.github\ffmpeg-build\build.ps1"
+          (Get-Content -LiteralPath $builder -Raw).Replace('cores=0', 'cores=4') | Set-Content -LiteralPath $builder -Encoding UTF8
 
       - name: Build stable and master from fresh source
         id: compile
@@ -54,7 +56,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ffmpeg-custom-windows-x64-${{ github.run_id }}
-          path: ffmpeg-custom-windows-x64-*.zip
+          path: |
+            ffmpeg-custom-windows-x64-*.zip
+            ffmpeg-custom-windows-x64-*.zip.sha256.txt
           retention-days: 1
           if-no-files-found: error
           compression-level: 0

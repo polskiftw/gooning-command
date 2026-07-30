@@ -86,6 +86,18 @@ class Database:
         self.connection.row_factory = sqlite3.Row
         with self.connection:
             self.connection.executescript(SCHEMA)
+            workflow = self.connection.execute(
+                "SELECT value FROM meta WHERE key = 'review_workflow'"
+            ).fetchone()
+            if workflow is None or workflow["value"] != "single-screen-v2":
+                self.connection.execute("DELETE FROM deletion_queue")
+                self.connection.execute("DELETE FROM pairs")
+                self.connection.execute(
+                    """
+                    INSERT INTO meta (key, value) VALUES ('review_workflow', 'single-screen-v2')
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                    """
+                )
 
     def close(self) -> None:
         with self._lock:
@@ -198,69 +210,53 @@ class Database:
     def replace_pairs(self, pairs: Iterable[tuple[str, str, float, str]]) -> int:
         normalized: dict[tuple[str, str], tuple[float, str]] = {}
         for left, right, similarity, reason in pairs:
-            key = tuple(sorted((left, right)))
+            key = (left, right)
             current = normalized.get(key)
             if current is None or similarity > current[0]:
                 normalized[key] = (similarity, reason)
 
         with self._lock, self.connection:
-            self.connection.execute("DELETE FROM pairs WHERE status = 'pending'")
+            self.connection.execute("DELETE FROM deletion_queue")
+            self.connection.execute("DELETE FROM pairs")
             for (left, right), (similarity, reason) in normalized.items():
-                self.connection.execute(
+                cursor = self.connection.execute(
                     """
-                    INSERT INTO pairs (left_key, right_key, similarity, reason)
-                    VALUES (?, ?, ?, ?)
-                    ON CONFLICT(left_key, right_key) DO UPDATE SET
-                        similarity = excluded.similarity,
-                        reason = excluded.reason
-                    WHERE pairs.status = 'pending'
+                    INSERT INTO pairs
+                        (left_key, right_key, similarity, reason, status)
+                    VALUES (?, ?, ?, ?, 'included')
                     """,
                     (left, right, similarity, reason),
                 )
+                self.connection.execute(
+                    "INSERT OR IGNORE INTO deletion_queue (key, pair_id) VALUES (?, ?)",
+                    (right, cursor.lastrowid),
+                )
         return len(normalized)
 
-    def pending_pairs(self) -> list[Pair]:
+    def scan_pairs(self) -> list[Pair]:
         with self._lock:
             rows = self.connection.execute(
                 """
-                SELECT * FROM pairs
-                WHERE status = 'pending'
-                ORDER BY similarity DESC, id
+                SELECT p.* FROM pairs p
+                JOIN assets left_asset ON left_asset.key = p.left_key
+                JOIN assets right_asset ON right_asset.key = p.right_key
+                WHERE left_asset.deleted = 0 AND right_asset.deleted = 0
+                ORDER BY p.similarity DESC, p.id
                 """
             ).fetchall()
         return [self._pair_from_row(row) for row in rows]
 
-    def reviewed_pairs(self) -> list[Pair]:
-        with self._lock:
-            rows = self.connection.execute(
-                "SELECT * FROM pairs WHERE status = 'reviewed' ORDER BY reviewed_at, id"
-            ).fetchall()
-        return [self._pair_from_row(row) for row in rows]
-
-    def decide_pair(self, pair_id: int, decision: str, delete_key: str | None = None) -> None:
-        if decision not in {"delete_left", "delete_right", "skip"}:
-            raise ValueError(f"Unsupported decision: {decision}")
+    def exclude_pair(self, pair_id: int) -> None:
         with self._lock, self.connection:
             self.connection.execute(
                 """
                 UPDATE pairs
-                SET status = 'reviewed', decision = ?, reviewed_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-                """,
-                (decision, pair_id),
-            )
-            self._rebuild_deletion_queue()
-
-    def undo_pair(self, pair_id: int) -> None:
-        with self._lock, self.connection:
-            self.connection.execute(
-                """
-                UPDATE pairs SET status = 'pending', decision = NULL, reviewed_at = NULL
+                SET status = 'excluded', decision = 'exclude', reviewed_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
                 (pair_id,),
             )
-            self._rebuild_deletion_queue()
+            self.connection.execute("DELETE FROM deletion_queue WHERE pair_id = ?", (pair_id,))
 
     def queued_deletions(self) -> list[tuple[str, int | None, int]]:
         with self._lock:
@@ -327,8 +323,13 @@ class Database:
                 FROM assets
                 """
             ).fetchone()
-            pending = self.connection.execute(
-                "SELECT COUNT(*) FROM pairs WHERE status = 'pending'"
+            pairs = self.connection.execute(
+                """
+                SELECT COUNT(*) FROM pairs p
+                JOIN assets left_asset ON left_asset.key = p.left_key
+                JOIN assets right_asset ON right_asset.key = p.right_key
+                WHERE left_asset.deleted = 0 AND right_asset.deleted = 0
+                """
             ).fetchone()[0]
             queued = self.connection.execute("SELECT COUNT(*) FROM deletion_queue").fetchone()[0]
         return {
@@ -336,7 +337,7 @@ class Database:
             "live": int(row["live"] or 0),
             "hashed": int(row["hashed"] or 0),
             "errors": int(row["errors"] or 0),
-            "pending": int(pending),
+            "pending": int(pairs),
             "queued": int(queued),
         }
 
@@ -344,31 +345,6 @@ class Database:
         with self._lock:
             row = self.connection.execute("SELECT * FROM assets WHERE key = ?", (key,)).fetchone()
         return self._asset_from_row(row) if row else None
-
-    def random_asset_key(self, excluding: set[str] | None = None) -> str | None:
-        excluding = excluding or set()
-        with self._lock:
-            rows = self.connection.execute(
-                "SELECT key FROM assets WHERE deleted = 0 AND scan_error IS NULL ORDER BY RANDOM() LIMIT 12"
-            ).fetchall()
-        return next((row["key"] for row in rows if row["key"] not in excluding), None)
-
-    def _rebuild_deletion_queue(self) -> None:
-        self.connection.execute("DELETE FROM deletion_queue")
-        rows = self.connection.execute(
-            """
-            SELECT id, left_key, right_key, decision
-            FROM pairs
-            WHERE status = 'reviewed' AND decision IN ('delete_left', 'delete_right')
-            ORDER BY reviewed_at, id
-            """
-        ).fetchall()
-        for row in rows:
-            key = row["left_key"] if row["decision"] == "delete_left" else row["right_key"]
-            self.connection.execute(
-                "INSERT OR IGNORE INTO deletion_queue (key, pair_id) VALUES (?, ?)",
-                (key, row["id"]),
-            )
 
     @staticmethod
     def _asset_from_row(row: sqlite3.Row) -> Asset:

@@ -23,6 +23,7 @@ PANEL = "#151515"
 TEXT = "#f4f4f4"
 MUTED = "#aaa"
 RED = "#d62f2f"
+GREEN = "#35b56b"
 
 
 def human_bytes(value: int) -> str:
@@ -59,6 +60,8 @@ class DeduperApp(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._close)
         self._configure_styles()
         self._build()
+        self.bind("<Left>", self._keyboard_previous)
+        self.bind("<Right>", self._keyboard_next)
         self.after(60, self._drain_events)
         self._refresh_counts()
         self._refresh_pairs()
@@ -92,13 +95,6 @@ class DeduperApp(tk.Tk):
         actions.pack(fill="x", padx=14, pady=(0, 8))
         self.scan_button = ttk.Button(actions, text="SCAN", style="Accent.TButton", command=self.start_scan)
         self.scan_button.pack(side="left", padx=(0, 8))
-        self.acquire_button = ttk.Button(
-            actions,
-            text="ACQUIRE TARGETS",
-            style="Accent.TButton",
-            command=self.start_acquire,
-        )
-        self.acquire_button.pack(side="left", padx=(0, 8))
         self.nuke_button = ttk.Button(actions, text="NUKE", style="Danger.TButton", command=self.start_nuke)
         self.nuke_button.pack(side="left")
         tk.Label(
@@ -115,6 +111,7 @@ class DeduperApp(tk.Tk):
             variable=self.slider,
             orient="horizontal",
             length=300,
+            takefocus=False,
         ).pack(side="left")
         tk.Label(
             actions,
@@ -130,16 +127,26 @@ class DeduperApp(tk.Tk):
         comparison.grid_columnconfigure(2, weight=1)
         comparison.grid_rowconfigure(1, weight=1)
 
-        self.left_delete = ttk.Button(
-            comparison, text="DELETE LEFT", style="Danger.TButton", command=lambda: self._decide("left")
+        tk.Label(
+            comparison,
+            text="SURVIVOR",
+            background=BG,
+            foreground=GREEN,
+            font=("Segoe UI", 10, "bold"),
+        ).grid(row=0, column=0, pady=(0, 6))
+        self.exclude_button = ttk.Button(
+            comparison,
+            text="EXCLUDE FROM THIS NUKE",
+            command=self._exclude_current,
         )
-        self.left_delete.grid(row=0, column=0, pady=(0, 6))
-        self.skip_button = ttk.Button(comparison, text="SKIP", command=lambda: self._decide("skip"))
-        self.skip_button.grid(row=0, column=1, padx=12, pady=(0, 6))
-        self.right_delete = ttk.Button(
-            comparison, text="DELETE RIGHT", style="Danger.TButton", command=lambda: self._decide("right")
-        )
-        self.right_delete.grid(row=0, column=2, pady=(0, 6))
+        self.exclude_button.grid(row=0, column=1, padx=12, pady=(0, 6))
+        tk.Label(
+            comparison,
+            text="DELETE ON NUKE",
+            background=BG,
+            foreground="#ff6767",
+            font=("Segoe UI", 10, "bold"),
+        ).grid(row=0, column=2, pady=(0, 6))
 
         left_panel = tk.Frame(comparison, background=PANEL)
         left_panel.grid(row=1, column=0, sticky="nsew")
@@ -169,14 +176,10 @@ class DeduperApp(tk.Tk):
 
         navigation = tk.Frame(self, background=BG)
         navigation.pack(fill="x", padx=14, pady=7)
-        ttk.Button(navigation, text="◀ BACK", command=self._back).pack(side="left")
-        ttk.Button(navigation, text="FORWARD ▶", command=self._forward).pack(side="right")
-
-        random_panel = tk.Frame(self, height=175, background=PANEL)
-        random_panel.pack(fill="x", padx=14, pady=(0, 8))
-        random_panel.pack_propagate(False)
-        self.random_preview = MediaPreview(random_panel, background=PANEL)
-        self.random_preview.pack(fill="both", expand=True)
+        self.previous_button = ttk.Button(navigation, text="◀ PREVIOUS", command=self._previous)
+        self.previous_button.pack(side="left")
+        self.next_button = ttk.Button(navigation, text="NEXT ▶", command=self._next)
+        self.next_button.pack(side="right")
 
         self.status = tk.StringVar(value="Ready.")
         status = tk.Label(
@@ -205,7 +208,7 @@ class DeduperApp(tk.Tk):
     def _set_busy(self, busy: bool) -> None:
         self.busy = busy
         state = "disabled" if busy else "normal"
-        for button in (self.scan_button, self.acquire_button, self.nuke_button):
+        for button in (self.scan_button, self.nuke_button):
             button.configure(state=state)
         self._set_review_state(bool(self.pairs))
 
@@ -232,6 +235,8 @@ class DeduperApp(tk.Tk):
             finished()
 
     def start_scan(self) -> None:
+        slider = int(round(self.slider.get()))
+
         def scan() -> str:
             self._ui(self.status.set, "Connecting to R2 and reading inventory…")
             self.store.verify()
@@ -240,52 +245,41 @@ class DeduperApp(tk.Tk):
             new_count, changed_count = self.database.upsert_inventory(inventory)
             missing_count = self.database.mark_missing_deleted(live_keys)
             pending = list(self.database.assets_needing_hashes())
-            if not pending:
-                return (
-                    f"Scan complete. {len(inventory)} live objects; all hashes were already current."
-                )
-
-            work_directory = Path(tempfile.mkdtemp(prefix="gparty-scan-"))
             errors = 0
-            try:
-                for index, asset in enumerate(pending, 1):
-                    self._ui(
-                        self.status.set,
-                        f"SCAN {index}/{len(pending)} — {asset.key}",
-                    )
-                    local_path = work_directory / f"media.{asset.extension}"
-                    local_path.unlink(missing_ok=True)
-                    try:
-                        self.store.download(asset.key, local_path)
-                        hash_file(asset, local_path, self.config)
-                        if asset.scan_error:
-                            errors += 1
-                    except Exception as exc:
-                        asset.scan_error = f"{type(exc).__name__}: {exc}"[:1000]
-                        errors += 1
-                    finally:
-                        self.database.save_hashes(asset)
+            if pending:
+                work_directory = Path(tempfile.mkdtemp(prefix="gparty-scan-"))
+                try:
+                    for index, asset in enumerate(pending, 1):
+                        self._ui(
+                            self.status.set,
+                            f"SCAN {index}/{len(pending)} — {asset.key}",
+                        )
+                        local_path = work_directory / f"media.{asset.extension}"
                         local_path.unlink(missing_ok=True)
-            finally:
-                shutil.rmtree(work_directory, ignore_errors=True)
+                        try:
+                            self.store.download(asset.key, local_path)
+                            hash_file(asset, local_path, self.config)
+                            if asset.scan_error:
+                                errors += 1
+                        except Exception as exc:
+                            asset.scan_error = f"{type(exc).__name__}: {exc}"[:1000]
+                            errors += 1
+                        finally:
+                            self.database.save_hashes(asset)
+                            local_path.unlink(missing_ok=True)
+                finally:
+                    shutil.rmtree(work_directory, ignore_errors=True)
+
+            assets = self.database.all_hashed_assets()
+            self._ui(self.status.set, f"Finding duplicate groups in {len(assets)} hashed objects…")
+            pairs = acquire_pairs(assets, slider)
+            target_count = self.database.replace_pairs(pairs)
             return (
                 f"Scan complete. {new_count} new, {changed_count} changed, "
-                f"{missing_count} missing, {errors} errors."
+                f"{missing_count} missing, {errors} errors, {target_count} deletion candidates."
             )
 
         self._run("Starting scan…", scan, self._refresh_pairs)
-
-    def start_acquire(self) -> None:
-        slider = int(round(self.slider.get()))
-
-        def acquire() -> str:
-            assets = self.database.all_hashed_assets()
-            self._ui(self.status.set, f"Comparing {len(assets)} hashed objects…")
-            pairs = acquire_pairs(assets, slider)
-            count = self.database.replace_pairs(pairs)
-            return f"Targets acquired. {count} suspected duplicate pairs at slider position {slider}."
-
-        self._run("Acquiring targets…", acquire, self._refresh_pairs)
 
     def start_nuke(self) -> None:
         queued = self.database.queued_deletions()
@@ -336,35 +330,38 @@ class DeduperApp(tk.Tk):
         )
 
     def _refresh_pairs(self) -> None:
-        self.pairs = self.database.pending_pairs()
+        self.pairs = self.database.scan_pairs()
         self.pair_index = min(self.pair_index, max(0, len(self.pairs) - 1))
         self._show_current_pair()
 
     def _show_current_pair(self) -> None:
         if not self.pairs:
-            self.pair_label.configure(text="No pending targets.\n\nRun SCAN, then ACQUIRE TARGETS.")
+            self.pair_label.configure(text="No duplicate pairs.\n\nAdjust the slider and press SCAN.")
             self.left_meta.configure(text="")
             self.right_meta.configure(text="")
             self.left_preview.clear("No target")
             self.right_preview.clear("No target")
             self._set_review_state(False)
-            self._show_random(set())
             return
         self._set_review_state(True)
         pair = self.pairs[self.pair_index]
         left = self.database.asset(pair.left_key)
         right = self.database.asset(pair.right_key)
+        exclusion = "\n\nEXCLUDED FROM THIS NUKE" if pair.status == "excluded" else ""
         self.pair_label.configure(
             text=(
                 f"PAIR {self.pair_index + 1} / {len(self.pairs)}\n\n"
-                f"{pair.similarity:.1f}%\n\n{pair.reason}"
+                f"{pair.similarity:.1f}%\n\n{pair.reason}{exclusion}"
             )
         )
+        if pair.status == "excluded":
+            self.exclude_button.configure(text="EXCLUDED FROM THIS NUKE", state="disabled")
+        else:
+            self.exclude_button.configure(text="EXCLUDE FROM THIS NUKE", state="normal")
         self.left_meta.configure(text=self._asset_text(left))
         self.right_meta.configure(text=self._asset_text(right))
         self._load_preview(pair.left_key, self.left_preview)
         self._load_preview(pair.right_key, self.right_preview)
-        self._show_random({pair.left_key, pair.right_key})
 
     def _asset_text(self, asset) -> str:
         if asset is None:
@@ -403,61 +400,47 @@ class DeduperApp(tk.Tk):
         else:
             widget.load(path)
 
-    def _show_random(self, excluding: set[str]) -> None:
-        key = self.database.random_asset_key(excluding)
-        if key:
-            self._load_preview(key, self.random_preview)
-        else:
-            self.random_preview.clear("Random preview appears after a scan")
-
     def _set_review_state(self, enabled: bool) -> None:
         state = "normal" if enabled and not self.busy else "disabled"
-        for button in (self.left_delete, self.right_delete, self.skip_button):
+        for button in (self.exclude_button, self.previous_button, self.next_button):
             button.configure(state=state)
 
-    def _decide(self, side: str) -> None:
+    def _exclude_current(self) -> None:
         if not self.pairs:
             return
         pair = self.pairs[self.pair_index]
-        if side == "left":
-            self.database.decide_pair(pair.id, "delete_left", pair.left_key)
-            message = f"Queued for deletion: {pair.left_key}"
-        elif side == "right":
-            self.database.decide_pair(pair.id, "delete_right", pair.right_key)
-            message = f"Queued for deletion: {pair.right_key}"
-        else:
-            self.database.decide_pair(pair.id, "skip")
-            message = "Pair skipped."
-        self.status.set(message)
-        self._refresh_counts()
-        self._refresh_pairs()
-
-    def _back(self) -> None:
-        reviewed = self.database.reviewed_pairs()
-        if not reviewed:
-            self.status.set("There is no reviewed decision to go back to.")
+        if pair.status == "excluded":
             return
-        pair = reviewed[-1]
-        self.database.undo_pair(pair.id)
-        self.status.set("Last review decision undone.")
+        self.database.exclude_pair(pair.id)
+        self.status.set(f"Excluded from this NUKE: {pair.right_key}")
         self._refresh_counts()
-        self._refresh_pairs()
-        for index, pending in enumerate(self.pairs):
-            if pending.id == pair.id:
-                self.pair_index = index
-                break
+        self.pairs = self.database.scan_pairs()
+        self.pair_index = (self.pair_index + 1) % len(self.pairs)
         self._show_current_pair()
 
-    def _forward(self) -> None:
-        if not self.pairs:
+    def _previous(self) -> None:
+        if self.busy or not self.pairs:
+            return
+        self.pair_index = (self.pair_index - 1) % len(self.pairs)
+        self._show_current_pair()
+
+    def _next(self) -> None:
+        if self.busy or not self.pairs:
             return
         self.pair_index = (self.pair_index + 1) % len(self.pairs)
         self._show_current_pair()
 
+    def _keyboard_previous(self, _event=None) -> str:
+        self._previous()
+        return "break"
+
+    def _keyboard_next(self, _event=None) -> str:
+        self._next()
+        return "break"
+
     def _close(self) -> None:
         self.left_preview.stop()
         self.right_preview.stop()
-        self.random_preview.stop()
         self.executor.shutdown(wait=False, cancel_futures=True)
         self.database.close()
         self.destroy()

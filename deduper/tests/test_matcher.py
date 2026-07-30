@@ -89,6 +89,43 @@ class MatcherTests(unittest.TestCase):
         self.assertEqual(len(pairs), 1)
         self.assertIn("vPDQ", pairs[0][3])
 
+    def test_best_quality_asset_is_oriented_as_survivor(self) -> None:
+        shared = "f" * 64
+        pairs = acquire_pairs(
+            [
+                asset(
+                    "gallery/small.jpg",
+                    sha256=shared,
+                    width=640,
+                    height=480,
+                    size=50_000,
+                ),
+                asset(
+                    "gallery/large.jpg",
+                    sha256=shared,
+                    width=1920,
+                    height=1080,
+                    size=200_000,
+                ),
+            ],
+            99,
+        )
+        self.assertEqual(pairs[0][:2], ("gallery/large.jpg", "gallery/small.jpg"))
+
+    def test_duplicate_group_has_one_survivor_and_unique_targets(self) -> None:
+        shared = "e" * 64
+        pairs = acquire_pairs(
+            [
+                asset("gallery/a.jpg", sha256=shared, width=640, height=480),
+                asset("gallery/b.jpg", sha256=shared, width=1280, height=720),
+                asset("gallery/c.jpg", sha256=shared, width=1920, height=1080),
+            ],
+            50,
+        )
+        self.assertEqual(len(pairs), 2)
+        self.assertEqual({pair[0] for pair in pairs}, {"gallery/c.jpg"})
+        self.assertEqual({pair[1] for pair in pairs}, {"gallery/a.jpg", "gallery/b.jpg"})
+
 
 if __name__ == "__main__":
     unittest.main()

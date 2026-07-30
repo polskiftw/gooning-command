@@ -397,6 +397,8 @@ The first scan:
 4. Saves only the key, size, type, hashes, and scan information in local SQLite.
 5. Deletes the temporary media file.
 6. Repeats for the next object.
+7. Applies the current slider setting to find duplicate groups.
+8. Selects one survivor per group and queues every other group member for NUKE.
 
 The first full scan is the long one. Later scans use the R2 key, ETag, size, and modified time to hash only new or changed objects.
 
@@ -426,12 +428,12 @@ Neither folder is uploaded to R2 or GitHub.
 
 For video and animated GIFs, the program samples frames, calculates a Meta PDQ hash for each useful frame, and compares the two sets in both directions. This follows the published vPDQ method while remaining buildable as a normal Windows application.
 
-# 15. ACQUIRE TARGETS
+# 15. Slider and automatic target selection
 
 Move the slider before pressing:
 
 ```text
-ACQUIRE TARGETS
+SCAN
 ```
 
 The slider has 100 positions:
@@ -446,12 +448,14 @@ The program uses a BK-tree for pHash and PDQ comparisons and banded frame lookup
 
 Exact SHA-256 duplicates are always targets, even at the strictest slider position.
 
-# 16. Review targets
+For each connected duplicate group, the app chooses one survivor. It prefers higher resolution, then longer duration, higher PDQ quality, and larger file size. The survivor is always shown on the left. Every other group member appears once on the right and is included in the next NUKE by default.
 
-Each target shows:
+# 16. Single-screen review
 
-- The left media
-- The right media
+The application never leaves its single working screen. Each pair shows:
+
+- The automatically selected survivor on the left
+- The candidate scheduled for deletion on the right
 - Each R2 key
 - Each file size
 - Dimensions
@@ -463,17 +467,15 @@ The controls are:
 
 | Button | Result |
 |---|---|
-| `DELETE LEFT` | Queues the left object |
-| `SKIP` | Marks this pair reviewed without deleting either object |
-| `DELETE RIGHT` | Queues the right object |
-| `BACK` | Undoes the most recent review decision |
-| `FORWARD` | Shows another pending pair without deciding this one |
+| `SCAN` | Inventories, hashes, detects, and queues duplicate candidates |
+| `PREVIOUS` | Shows the previous pair |
+| `NEXT` | Shows the next pair |
+| `EXCLUDE FROM THIS NUKE` | Spares the right candidate for this scan and immediately advances |
+| `NUKE` | Immediately deletes all non-excluded right candidates |
 
-The DELETE buttons do not contact R2. They only change the local review queue.
+The keyboard Left and Right arrow keys perform the same navigation as PREVIOUS and NEXT. Navigation wraps at both ends. There are no delete-side selectors, skip button, separate review screen, or confirmation dialogs.
 
-One object can appear in several pairs. Choosing to delete one file does not stop its survivor from being compared with other objects.
-
-The smaller preview underneath is one random live media object. It loops when it is animated. It is not a third duplicate candidate.
+An exclusion remains visible if revisited, but lasts only until the next SCAN. A new scan rebuilds the candidate queue and makes the object eligible again if it still matches.
 
 # 17. NUKE
 
@@ -486,6 +488,8 @@ It:
 3. Marks confirmed deletions locally.
 4. Removes confirmed deleted keys from `gallery-index.json`.
 5. Reports the number of deleted objects and reclaimed bytes.
+
+NUKE begins immediately when clicked. It does not open a confirmation dialog.
 
 If R2 deletes an object but the later index write fails, the deduper remembers those keys in a local cleanup queue. The next NUKE retries the gallery-index cleanup, including when there are no new media deletions.
 
@@ -506,7 +510,7 @@ The SQLite database remembers:
 - Hashes and media details
 - Scan failures
 - Candidate pairs
-- Review decisions
+- Current-scan exclusions
 - Deletion queue
 - Deletion history and survivors
 - Any gallery-index cleanup still needing a retry
@@ -516,13 +520,12 @@ The SQLite database remembers:
 Normal cleanup session:
 
 1. Open `GParty Deduper.exe`.
-2. Press **SCAN**.
-3. Wait for the scan to finish.
-4. Set the slider.
-5. Press **ACQUIRE TARGETS**.
-6. Review targets.
-7. Press **NUKE** when ready.
-8. Wait up to 60 seconds for the Worker cache to refresh.
+2. Set the slider.
+3. Press **SCAN** and wait for detection to finish.
+4. Review every left/right pair with the buttons or keyboard arrows.
+5. Press **EXCLUDE FROM THIS NUKE** on any right-side candidate that should be spared.
+6. Press **NUKE** when ready.
+7. Wait up to 60 seconds for the Worker cache to refresh.
 
 The program can be closed between any of these stages. SQLite keeps the work.
 

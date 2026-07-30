@@ -75,11 +75,85 @@ def acquire_pairs(assets: list[Asset], slider: int) -> list[tuple[str, str, floa
     _image_pairs(assets, limits, candidates)
     _video_pairs(assets, limits, candidates)
     minimum = float(limits["minimum_similarity"])
-    return [
-        (left, right, score, reason)
-        for (left, right), (score, reason) in candidates.items()
-        if score >= minimum
-    ]
+    selected = {
+        keys: details
+        for keys, details in candidates.items()
+        if details[0] >= minimum
+    }
+    return _orient_duplicate_groups(assets, selected)
+
+
+def _orient_duplicate_groups(
+    assets: list[Asset],
+    candidates: dict[tuple[str, str], tuple[float, str]],
+) -> list[tuple[str, str, float, str]]:
+    """Turn matching edges into one survivor and unique deletion candidates per group."""
+    if not candidates:
+        return []
+
+    asset_by_key = {asset.key: asset for asset in assets}
+    parent: dict[str, str] = {}
+
+    def find(key: str) -> str:
+        parent.setdefault(key, key)
+        while parent[key] != key:
+            parent[key] = parent[parent[key]]
+            key = parent[key]
+        return key
+
+    def union(left: str, right: str) -> None:
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    for left, right in candidates:
+        union(left, right)
+
+    groups: dict[str, set[str]] = defaultdict(set)
+    for key in parent:
+        groups[find(key)].add(key)
+
+    oriented: list[tuple[str, str, float, str]] = []
+    for members in groups.values():
+        survivor = max(
+            members,
+            key=lambda key: _survivor_rank(asset_by_key[key]),
+        )
+        for deletion_candidate in members - {survivor}:
+            direct_key = tuple(sorted((survivor, deletion_candidate)))
+            details = candidates.get(direct_key)
+            if details is None:
+                linked = [
+                    (score, reason)
+                    for (left, right), (score, reason) in candidates.items()
+                    if deletion_candidate in {left, right} and {left, right} <= members
+                ]
+                score, reason = max(linked, key=lambda item: item[0])
+                reason = f"duplicate cluster link; {reason}"
+            else:
+                score, reason = details
+            oriented.append(
+                (
+                    survivor,
+                    deletion_candidate,
+                    score,
+                    f"automatic survivor; {reason}",
+                )
+            )
+    oriented.sort(key=lambda pair: (-pair[2], pair[0], pair[1]))
+    return oriented
+
+
+def _survivor_rank(asset: Asset) -> tuple[int, float, int, int, str]:
+    """Prefer resolution, duration, PDQ detail, then file size."""
+    pixel_count = int(asset.width or 0) * int(asset.height or 0)
+    return (
+        pixel_count,
+        float(asset.duration or 0),
+        int(asset.pdq_quality or 0),
+        int(asset.size),
+        asset.key,
+    )
 
 
 def _record(

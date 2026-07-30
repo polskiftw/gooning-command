@@ -314,24 +314,15 @@ bucket_name = "<R2_BUCKET_NAME>"
 
 Committing Worker code does not update the live site. The manual deployment workflow does.
 
-# 11. Build the Windows deduper
+# 11. Download the Windows deduper
 
-Run:
+Open this permanent download link:
 
 ```text
-GitHub repository
-→ Actions
-→ Build GParty Deduper
-→ Run workflow
+https://github.com/polskiftw/gparty/releases/download/windows-latest/GParty-Deduper-Windows.zip
 ```
 
-Wait for the green check. Then:
-
-1. Open that completed workflow run.
-2. Find **Artifacts**.
-3. Download `GParty-Deduper-Windows`.
-4. Open the downloaded artifact.
-5. Extract `GParty-Deduper-Windows.zip` into a normal folder on the PC.
+Extract `GParty-Deduper-Windows.zip` into a normal folder on the PC.
 
 The build workflow:
 
@@ -340,9 +331,10 @@ The build workflow:
 3. Runs the deduper tests.
 4. Builds `GParty Deduper.exe` with PyInstaller.
 5. Adds the example configuration and license.
-6. Uploads the finished portable ZIP for 30 days.
+6. Uploads the normal workflow artifact for 30 days.
+7. Replaces the ZIP in the **Latest Windows Build** release.
 
-It also runs automatically when deduper code or the deduper build workflow changes on `main`.
+It runs automatically when deduper code or the deduper build workflow changes on `main`. A new run cancels an older build. The publishing step also checks that it still represents the newest `main` commit before replacing the release.
 
 # 12. Configure the Windows deduper
 

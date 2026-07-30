@@ -45,7 +45,7 @@ The shared storage contract is:
 | `.github/workflows/yoink.yml` | Scheduled and manual collector |
 | `.github/workflows/flush.yml` | Manual index repair |
 | `.github/workflows/update-cf-web.yml` | Manual Worker deployment |
-| `.github/workflows/build-deduper.yml` | Manual Windows ZIP build |
+| `.github/workflows/build-deduper.yml` | Tested Windows ZIP build and rolling release |
 | `requirements.txt` | Collector and repair dependencies |
 
 ## Collector requirements
@@ -148,15 +148,11 @@ It records these fingerprints in a local SQLite database:
 
 Crop-resistant hashes have their own indexed candidate search, so they can find a cropped duplicate even when the whole-image pHash is too different. Animated GIF frames are sampled across the complete animation with ceiling division; the configured `MAX_VIDEO_FRAMES` value is used as the ceiling and is not hard-coded to 300.
 
-### Build the Windows ZIP
+### Download the Windows ZIP
 
-1. Open **Actions → Build GParty Deduper**.
-2. Select **Run workflow**.
-3. Open the completed run.
-4. Download the `GParty-Deduper-Windows` artifact.
-5. Extract `GParty-Deduper-Windows.zip`.
+Download [the latest Windows ZIP](https://github.com/polskiftw/gparty/releases/download/windows-latest/GParty-Deduper-Windows.zip), then extract it into a normal folder.
 
-The workflow runs the test suite and builds the portable application on a real Windows runner with PyInstaller. It also runs automatically when deduper code or its build workflow changes on `main`.
+The workflow runs the test suite and builds the portable application on a real Windows runner with PyInstaller. It runs automatically when deduper code or its build workflow changes on `main`, replaces the rolling release ZIP after a successful build, and retains the normal workflow artifact for 30 days. A newer run cancels an older build, and stale commits cannot replace the latest release.
 
 ### Configure the deduper
 

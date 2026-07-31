@@ -134,8 +134,7 @@ function Write-FfmpegOptions {
 --disable-doc
 --enable-runtime-cpudetect
 --enable-x86asm
---enable-w32threads
---disable-pthreads
+--enable-pthreads
 --cpu=raptorlake
 --extra-cflags=-O3 -march=raptorlake -mtune=raptorlake -flto
 --extra-cxxflags=-O3 -march=raptorlake -mtune=raptorlake -flto
@@ -234,6 +233,227 @@ function Write-FfmpegOptions {
 --enable-protocol=tcp
 --enable-protocol=tls
 '@
+    $threadOptions = @($options -split "`r?`n" | Where-Object { $_ -match '^--(enable|disable)-(pthreads|w32threads)
+}
+
+function Patch-MabsLibvpxIncludePath {
+    $scriptPath = Join-Path $suiteRoot 'build\media-suite_compile.sh'
+    if (-not (Test-Path $scriptPath)) {
+        throw 'The MABS compile script is missing; cannot apply the libvpx include-path fix.'
+    }
+
+    $content = [IO.File]::ReadAllText($scriptPath)
+    $marker = '# GParty libvpx generated-include patch v2.'
+    if ($content.Contains($marker)) { return }
+
+    $newline = if ($content.Contains("`r`n")) { "`r`n" } else { "`n" }
+    $pristine = @(
+        '    sed -i ''s;HAVE_GNU_STRIP=yes;HAVE_GNU_STRIP=no;'' -- ./*.mk'
+        '    do_make'
+    ) -join $newline
+    $legacy = @(
+        '    sed -i ''s;HAVE_GNU_STRIP=yes;HAVE_GNU_STRIP=no;'' -- ./*.mk'
+        '    # GParty: force libvpx to include its generated out-of-tree build directory.'
+        '    sed -i ''s;$(CC) $(INTERNAL_CFLAGS) $(CFLAGS);$(CC) -I$(CURDIR) $(INTERNAL_CFLAGS) $(CFLAGS);g'' Makefile'
+        '    sed -i ''s;$(CXX) $(INTERNAL_CFLAGS) $(CXXFLAGS);$(CXX) -I$(CURDIR) $(INTERNAL_CFLAGS) $(CXXFLAGS);g'' Makefile'
+        '    do_make'
+    ) -join $newline
+
+    [string[]]$candidates = @($pristine, $legacy) | Where-Object { $content.Contains($_) }
+    if ($candidates.Count -ne 1) {
+        throw "Expected exactly one supported libvpx build hook in MABS, found $($candidates.Count)."
+    }
+
+    $replacement = @(
+        '    sed -i ''s;HAVE_GNU_STRIP=yes;HAVE_GNU_STRIP=no;'' -- ./*.mk'
+        '    # GParty libvpx generated-include patch v2.'
+        '    test -f Makefile || { echo "libvpx Makefile was not generated." >&2; exit 1; }'
+        '    test -s vpx_config.h || { echo "libvpx vpx_config.h was not generated." >&2; exit 1; }'
+        '    sed -i ''s;$(CC) $(INTERNAL_CFLAGS) $(CFLAGS);$(CC) -I$(CURDIR) $(INTERNAL_CFLAGS) $(CFLAGS);g'' Makefile'
+        '    sed -i ''s;$(CXX) $(INTERNAL_CFLAGS) $(CXXFLAGS);$(CXX) -I$(CURDIR) $(INTERNAL_CFLAGS) $(CXXFLAGS);g'' Makefile'
+        '    sed -i ''s;$(AS) $(ASFLAGS);$(AS) -I$(CURDIR)/ $(ASFLAGS);g'' Makefile'
+        '    sed -i ''s;--depfile=$@ $(ASFLAGS);--depfile=$@ -I$(CURDIR)/ $(ASFLAGS);g'' Makefile'
+        '    grep -Fq ''$(CC) -I$(CURDIR) $(INTERNAL_CFLAGS) $(CFLAGS)'' Makefile || { echo "libvpx C include-path patch did not apply." >&2; exit 1; }'
+        '    grep -Fq ''$(CXX) -I$(CURDIR) $(INTERNAL_CFLAGS) $(CXXFLAGS)'' Makefile || { echo "libvpx C++ include-path patch did not apply." >&2; exit 1; }'
+        '    grep -Fq ''$(AS) -I$(CURDIR)/ $(ASFLAGS)'' Makefile || { echo "libvpx assembler include-path patch did not apply." >&2; exit 1; }'
+        '    grep -Fq -- ''--depfile=$@ -I$(CURDIR)/ $(ASFLAGS)'' Makefile || { echo "libvpx assembler dependency-path patch did not apply." >&2; exit 1; }'
+        '    if grep -Fq ''$(CC) $(INTERNAL_CFLAGS) $(CFLAGS)'' Makefile || grep -Fq ''$(CXX) $(INTERNAL_CFLAGS) $(CXXFLAGS)'' Makefile || grep -Fq ''$(AS) $(ASFLAGS)'' Makefile || grep -Fq -- ''--depfile=$@ $(ASFLAGS)'' Makefile; then'
+        '        echo "libvpx still contains an unpatched generated-include command." >&2'
+        '        exit 1'
+        '    fi'
+        '    do_make'
+    ) -join $newline
+
+    $content = $content.Replace($candidates[0], $replacement)
+    [IO.File]::WriteAllText($scriptPath, $content, [System.Text.UTF8Encoding]::new($false))
+}
+
+function Resolve-LatestStableTag {
+    Write-Stage 'Resolve latest stable FFmpeg tag'
+    $tags = Invoke-RestMethod -Headers @{ 'User-Agent' = 'custom-ffmpeg-builder' } -Uri 'https://api.github.com/repos/FFmpeg/FFmpeg/tags?per_page=100'
+    $stable = $tags | Where-Object { $_.name -match '^n\d+\.\d+(\.\d+)?$' } | Sort-Object {
+        [version](($_.name.TrimStart('n')) -replace '^([0-9]+\.[0-9]+)$','$1.0')
+    } -Descending | Select-Object -First 1
+    if (-not $stable) { throw 'Unable to resolve latest stable FFmpeg tag.' }
+    return $stable.name
+}
+
+function Write-SourceCommits {
+    $lines = [System.Collections.Generic.List[string]]::new()
+    if (Test-Path (Join-Path $suiteRoot '.git')) {
+        $sha = (& git -C $suiteRoot rev-parse HEAD 2>$null | Select-Object -First 1)
+        if ($sha) { $lines.Add("media-autobuild_suite=$sha") }
+    }
+    $sourceRoot = Join-Path $suiteRoot 'build'
+    if (Test-Path $sourceRoot) {
+        Get-ChildItem -Path $sourceRoot -Directory -Recurse -Force -Filter '.git' -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                $source = $_.Parent.FullName
+                try {
+                    $sha = (& git -C $source rev-parse HEAD 2>$null | Select-Object -First 1)
+                    if ($sha) {
+                        $name = [IO.Path]::GetRelativePath($sourceRoot, $source) -replace '\\','/'
+                        $lines.Add("$name=$sha")
+                    }
+                } catch {}
+            }
+    }
+    $lines | Sort-Object -Unique | Set-Content -Path (Join-Path $metaRoot 'source-commits.txt') -Encoding UTF8
+}
+
+function Run-Mabs([string]$Label, [string]$FfmpegPath) {
+    Write-Ini -FfmpegPath $FfmpegPath
+    Write-FfmpegOptions
+    $before = Get-ChildItem -Path $suiteRoot -Filter ffmpeg.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+    Invoke-Logged "Build $Label" { cmd.exe /d /c "cd /d $suiteRoot && media-autobuild_suite.bat" }
+    $after = Get-ChildItem -Path $suiteRoot -Filter ffmpeg.exe -Recurse -File | Sort-Object LastWriteTime -Descending
+    $candidate = $after | Where-Object { $_.FullName -notin $before } | Select-Object -First 1
+    if (-not $candidate) { $candidate = $after | Select-Object -First 1 }
+    if (-not $candidate) { throw "MABS completed but no ffmpeg.exe was found for $Label." }
+    $binDir = $candidate.Directory.FullName
+    $target = Join-Path $outRoot $Label
+    New-Item -ItemType Directory -Force -Path $target | Out-Null
+    foreach ($name in 'ffmpeg.exe','ffprobe.exe','ffplay.exe') {
+        $source = Join-Path $binDir $name
+        if (-not (Test-Path $source)) { throw "$name was not produced for $Label." }
+        Copy-Item $source $target -Force
+    }
+    return $target
+}
+
+function Assert-Features([string]$Folder, [string]$Label) {
+    Write-Stage "Validate $Label features"
+    $ffmpeg = Join-Path $Folder 'ffmpeg.exe'
+    $checks = [ordered]@{
+        encoders = @('libx264','libx265','libsvtav1','libaom-av1','librav1e','h264_nvenc','hevc_nvenc','av1_nvenc','libfdk_aac','libopus','libmp3lame')
+        decoders = @('h264','hevc','av1','aac','opus','flac','ass','hdmv_pgs_subtitle','dvdsub')
+        filters  = @('subtitles','libplacebo','vmaf','loudnorm','zscale','scale_cuda')
+        protocols = @('file','pipe','http','https','tcp','tls','crypto','data')
+        hwaccels = @('cuda','d3d11va','d3d12va','vulkan')
+    }
+    foreach ($entry in $checks.GetEnumerator()) {
+        $text = & $ffmpeg "-$($entry.Key)" 2>&1 | Out-String
+        Set-Content -Path (Join-Path $Folder "$($entry.Key).txt") -Value $text -Encoding UTF8
+        foreach ($required in $entry.Value) {
+            if ($text -notmatch [regex]::Escape($required)) { throw "$Label is missing required $($entry.Key) feature: $required" }
+        }
+    }
+    $version = & $ffmpeg -version 2>&1 | Out-String
+    Set-Content -Path (Join-Path $Folder 'build-info.txt') -Value $version -Encoding UTF8
+    if ($version -notmatch '--enable-static' -or $version -match '--enable-shared') { throw "$Label is not configured as static-only." }
+
+    $dumpbin = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
+    if ($dumpbin) {
+        foreach ($exe in Get-ChildItem $Folder -Filter *.exe) {
+            $deps = & $dumpbin.Source /dependents $exe.FullName 2>&1 | Out-String
+            Add-Content -Path (Join-Path $Folder 'pe-dependencies.txt') -Value "`n[$($exe.Name)]`n$deps"
+            $forbidden = $deps -split "`r?`n" | Where-Object { $_ -match '\.dll' -and $_ -notmatch '(?i)(KERNEL32|USER32|ADVAPI32|SHELL32|OLE32|OLEAUT32|WS2_32|BCRYPT|CRYPT32|GDI32|COMDLG32|WINMM|MFPLAT|MF|MFOBJECTS|D3D11|D3D12|DXGI|VULKAN-1|NVENCODEAPI64|NVCUVID|NVCUDA|UCRTBASE|VCRUNTIME|MSVCP|API-MS-WIN|EXT-MS-WIN)' }
+            if ($forbidden) { throw "$Label has unexpected DLL dependencies:`n$($forbidden -join "`n")" }
+        }
+    }
+}
+
+function Write-LocalValidation([string]$Folder) {
+    $cmd = @'
+@echo off
+setlocal
+cd /d "%~dp0"
+echo === FFmpeg version ===
+ffmpeg.exe -version || goto :fail
+echo.
+echo === NVIDIA encoders ===
+ffmpeg.exe -hide_banner -encoders | findstr /i "nvenc" || goto :fail
+echo.
+echo === Hardware accelerators ===
+ffmpeg.exe -hide_banner -hwaccels || goto :fail
+echo.
+echo === CUDA/NVENC test ===
+ffmpeg.exe -hide_banner -f lavfi -i testsrc2=size=1280x720:rate=30 -t 2 -c:v h264_nvenc -y "%TEMP%\ffmpeg-nvenc-test.mp4" || goto :fail
+ffprobe.exe -v error -show_streams "%TEMP%\ffmpeg-nvenc-test.mp4" || goto :fail
+del /q "%TEMP%\ffmpeg-nvenc-test.mp4" 2>nul
+echo.
+echo ALL LOCAL HARDWARE TESTS PASSED.
+pause
+exit /b 0
+:fail
+echo.
+echo A TEST FAILED. Save this window or rerun from Command Prompt and send the output.
+pause
+exit /b 1
+'@
+    Set-Content -Path (Join-Path $Folder 'verify-nvidia.cmd') -Value $cmd -Encoding ASCII
+}
+
+try {
+    Write-Stage "Record $Variant environment"
+    Get-ComputerInfo | Out-File (Join-Path $metaRoot "environment-$Variant.txt") -Encoding UTF8
+    Write-SafeEnvironment -Path (Join-Path $metaRoot "environment-variables-$Variant.txt")
+
+    if ($ReuseSuite) {
+        if (-not (Test-Path (Join-Path $suiteRoot 'media-autobuild_suite.bat'))) {
+            throw 'The reusable MABS workspace is missing.'
+        }
+    } else {
+        if (Test-Path $suiteRoot) { Remove-Item $suiteRoot -Recurse -Force }
+        Invoke-Logged 'Clone media-autobuild_suite fresh' { git clone --depth 1 https://github.com/m-ab-s/media-autobuild_suite.git $suiteRoot }
+        Copy-Item (Join-Path $repoRoot '.github\ffmpeg-build\README.txt') $diagRoot -Force
+    }
+
+    Patch-MabsLibvpxIncludePath
+
+    $versionsPath = Join-Path $metaRoot 'resolved-versions.txt'
+    if ($Variant -eq 'stable') {
+        $stableTag = Resolve-LatestStableTag
+        Set-Content -Path $versionsPath -Value "stable=$stableTag`nmaster=HEAD at build time" -Encoding UTF8
+        $folder = Run-Mabs -Label 'stable' -FfmpegPath "https://github.com/FFmpeg/FFmpeg.git#tag=$stableTag"
+    } else {
+        if (-not (Test-Path $versionsPath)) {
+            Set-Content -Path $versionsPath -Value "stable=not built`nmaster=HEAD at build time" -Encoding UTF8
+        }
+        $folder = Run-Mabs -Label 'master' -FfmpegPath 'https://github.com/FFmpeg/FFmpeg.git#branch=master'
+    }
+
+    Assert-Features -Folder $folder -Label $Variant
+    Write-LocalValidation -Folder $folder
+    Write-SourceCommits
+    Copy-Item $versionsPath $outRoot -Force
+    Copy-Item (Join-Path $metaRoot 'source-commits.txt') $outRoot -Force
+    Copy-Item (Join-Path $repoRoot '.github\ffmpeg-build\README.txt') $outRoot -Force
+    Remove-Item (Join-Path $diagRoot 'failed-step.txt') -Force -ErrorAction SilentlyContinue
+    Stop-Transcript | Out-Null
+    exit 0
+}
+catch {
+    $_ | Format-List * -Force | Out-File (Join-Path $diagRoot "SUMMARY-$Variant.txt") -Encoding UTF8
+    Write-Error $_
+    try { Stop-Transcript | Out-Null } catch {}
+    exit 1
+}
+ })
+    if ($threadOptions.Count -ne 1 -or $threadOptions[0] -ne '--enable-pthreads') {
+        throw "FFmpeg must use exactly one thread backend: --enable-pthreads. Found: $($threadOptions -join ', ')"
+    }
+
     Set-Content -Path (Join-Path $suiteRoot 'build\ffmpeg_options.txt') -Value $options -Encoding ASCII
 }
 

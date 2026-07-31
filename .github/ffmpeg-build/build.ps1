@@ -136,9 +136,9 @@ function Write-FfmpegOptions {
 --enable-x86asm
 --enable-pthreads
 --cpu=raptorlake
---extra-cflags=-O3 -march=raptorlake -mtune=raptorlake -flto
---extra-cxxflags=-O3 -march=raptorlake -mtune=raptorlake -flto
---extra-ldflags=-flto -static
+--extra-cflags=-O3 -march=raptorlake -mtune=raptorlake
+--extra-cxxflags=-O3 -march=raptorlake -mtune=raptorlake
+--extra-ldflags=-static
 --extra-libs=-lcfgmgr32
 --enable-bzlib
 --enable-iconv

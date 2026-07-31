@@ -10,24 +10,23 @@ This Worker accepts secret-suffixed addresses at `gooning.party`, removes the su
 - The original secret-bearing recipient is not copied into the rebuilt message headers.
 - Exact appearances of the secret-bearing address in the subject, text body, or HTML body are replaced with the clean address.
 
-## Cloudflare values
+## Private Cloudflare secrets
 
-Create these encrypted Worker secrets:
+Create these encrypted Worker secrets in Cloudflare. Never commit their values to GitHub.
 
-- `EMAIL_SECRET_SUFFIX` — the suffix itself, such as `123`. Do not include it in GitHub.
+- `EMAIL_SECRET_SUFFIX` — the private suffix.
 - `FORWARD_TO` — the verified Gmail destination address.
-- `OUTBOUND_FROM` — an address at `gooning.party` used as the relay envelope sender, such as `relay@gooning.party`.
+- `OUTBOUND_FROM` — the relay envelope sender at `gooning.party`, such as `relay@gooning.party`.
 
-The outbound email binding must be named `EMAIL`.
+The public `send_email` binding is named `EMAIL` but contains no destination address. Cloudflare permits an unrestricted binding to send only to destination addresses already verified in the account. The Worker reads the selected Gmail destination from the encrypted `FORWARD_TO` secret at runtime.
 
 ## One-time setup
 
 1. In Cloudflare, open **Email > Email Routing** for `gooning.party`.
 2. Add the Gmail address as a destination and complete its verification email.
 3. Enable Email Routing and allow Cloudflare to create the required MX and SPF DNS records.
-4. Open **Workers & Pages** and deploy this Worker from the `email-worker` directory.
-5. In `wrangler.jsonc`, replace `YOUR_GMAIL_ADDRESS` with the exact verified Gmail address before deploying.
-6. Set the three encrypted secrets:
+4. Deploy this Worker from the `email-worker` directory.
+5. Add the three encrypted secrets in the Worker's Cloudflare settings, or with Wrangler:
 
 ```bash
 npx wrangler secret put EMAIL_SECRET_SUFFIX
@@ -35,9 +34,9 @@ npx wrangler secret put FORWARD_TO
 npx wrangler secret put OUTBOUND_FROM
 ```
 
-7. Open **Email > Email Routing > Routing rules**.
-8. Set the catch-all action to **Send to a Worker** and choose `gparty-email-1`.
-9. Do not create ordinary forwarding rules for the secret addresses. The catch-all Worker handles them.
+6. Open **Email > Email Routing > Routing rules**.
+7. Set the catch-all action to **Send to a Worker** and choose `gparty-email-1`.
+8. Do not create ordinary forwarding rules for the secret addresses. The catch-all Worker handles them.
 
 ## Deploy
 
@@ -50,9 +49,9 @@ npm run deploy
 
 ## Test
 
-Assuming the secret is `123`:
+With your private suffix configured:
 
-- Send to `test123@gooning.party`. Gmail should receive it with visible `To: test@gooning.party`.
+- Send to `test<SECRET>@gooning.party`. Gmail should receive it with visible `To: test@gooning.party`.
 - Send to `test@gooning.party`. It should be rejected.
 - Send to `dmca@gooning.party` and `abuse@gooning.party`. Both should arrive without a suffix.
 - Reply in Gmail. The reply should go to the original sender because the Worker sets `Reply-To` to that sender.

@@ -1,0 +1,23 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "gparty-email-1",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-31",
+  "workers_dev": false,
+  "observability": {
+    "enabled": true
+  },
+  "send_email": [
+    {
+      "name": "EMAIL",
+      "allowed_destination_addresses": ["YOUR_GMAIL_ADDRESS"]
+    }
+  ],
+  "secrets": {
+    "required": [
+      "EMAIL_SECRET_SUFFIX",
+      "FORWARD_TO",
+      "OUTBOUND_FROM"
+    ]
+  }
+}

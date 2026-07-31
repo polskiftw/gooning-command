@@ -12,14 +12,29 @@ button { font: inherit; padding: .55rem .8rem; border-radius: .45rem; border: 1p
 #footer-controls { width: min(20rem, 100%); display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; column-gap: .85rem; }
 #filter { grid-column: 1; width: 4.5rem; margin: 0; padding: .4rem 0; border: 0; border-radius: 0; appearance: none; -webkit-appearance: none; background: transparent; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
 #filter::-ms-expand { display: none; }
-.icon-link { width: 2rem; height: 2rem; display: grid; place-items: center; color: #fff; text-decoration: none; background: transparent; border: 0; }
+.icon-link, .icon-action { width: 2rem; height: 2rem; display: grid; place-items: center; text-decoration: none; background: transparent; border: 0; border-radius: 0; padding: 0; }
+.icon-link { color: #fff; }
+.icon-action { grid-column: 2; justify-self: center; color: #777; }
+.icon-action svg { width: 1.35rem; height: 1.35rem; fill: none; stroke: currentColor; stroke-width: 2.25; stroke-linecap: round; }
 .icon-link:first-of-type { grid-column: 3; }
 .icon-link:last-of-type { grid-column: 4; }
 .icon-link svg { width: 1.45rem; height: 1.45rem; fill: currentColor; }
 #filter:focus { outline: none; }
-#filter:focus-visible, .icon-link:focus-visible { outline: 2px solid #fff; outline-offset: 4px; border-radius: .2rem; }
+#filter:focus-visible, .icon-link:focus-visible, .icon-action:focus-visible { outline: 2px solid #fff; outline-offset: 4px; border-radius: .2rem; }
 #status { min-width: 8rem; color: #bbb; font-size: .9rem; }
 #hint { display: none; position: absolute; left: 50%; bottom: 1.1rem; transform: translateX(-50%); width: max-content; max-width: calc(100% - 2rem); padding: .55rem .75rem; border-radius: .45rem; background: rgb(0 0 0 / 55%); color: #fff; font-size: .95rem; line-height: 1.35; text-align: center; pointer-events: none; backdrop-filter: blur(4px); }
+
+#source-dialog { width: min(22rem, calc(100% - 2rem)); margin: auto; padding: 0; border: 1px solid #444; border-radius: .65rem; background: #111; color: #fff; }
+#source-dialog::backdrop { background: rgb(0 0 0 / 72%); }
+#source-dialog-body { display: grid; gap: .7rem; padding: 1rem; }
+#source-dialog-title { font-size: 1.05rem; font-weight: 700; }
+#source-dialog label { color: #bbb; font-size: .9rem; }
+#source-input { width: 100%; min-height: 2.65rem; padding: .55rem .65rem; border: 1px solid #555; border-radius: .4rem; background: #050505; color: #fff; font: inherit; }
+#source-input:focus { outline: none; }
+#source-input:focus-visible { outline: 2px solid #aaa; outline-offset: 2px; }
+#source-feedback { min-height: 1.35rem; color: #bbb; font-size: .9rem; line-height: 1.35; }
+#source-actions { display: flex; justify-content: flex-end; gap: .6rem; }
+#source-actions button { min-width: 4.5rem; }
 #error { position: fixed; inset: 1rem 1rem auto; padding: .75rem; background: #5c1010; display: none; text-align: center; z-index: 10; }
 @media (max-width: 700px) {
   body { grid-template-rows: minmax(0, 1fr) auto; padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }

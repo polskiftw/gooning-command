@@ -31,6 +31,7 @@ The programs agree on these names:
 | Media folder inside R2 | `gallery/` |
 | Media list inside R2 | `gallery-index.json` |
 | Download history inside R2 | `_internal/gallery-dl-archive-v0.2.1.sqlite3` |
+| Private viewer source list inside R2 | `_internal/reddit-sources.json` |
 | Worker bucket binding | `MEDIA_BUCKET` |
 | Bucket-name secret | `R2_BUCKET_NAME` |
 
@@ -38,11 +39,12 @@ The programs agree on these names:
 
 | File or folder | Job |
 |---|---|
-| `app.py` | Downloads, uploads, remembers finished posts, and writes the R2 index |
+| `app.py` | Merges private sources, downloads, uploads, remembers finished posts, and writes the R2 index |
 | `settings.json` | Collector settings and harmless source placeholders |
 | `requirements.txt` | Packages used by Yoink and Flush |
-| `worker/worker.js` | Cloudflare Worker routes and R2 access |
-| `worker/app.js` | Viewer buttons, filters, keyboard, and media behavior |
+| `worker/worker.js` | Security headers around the Cloudflare Worker routes |
+| `worker/viewer.js` | Viewer page, APIs, certificate check, and R2 access |
+| `worker/app.js` | Viewer buttons, filters, keyboard, media behavior, and add-subreddit box |
 | `worker/style.css` | Viewer appearance |
 | `worker/wrangler.jsonc` | Local Wrangler settings and Worker wiring |
 | `worker/repair_index.py` | Adds missing R2 objects to the index |
@@ -105,7 +107,7 @@ Add the Reddit cookie file as one Base64 line:
 REDDIT_COOKIES_BASE64
 ```
 
-Add up to ten private source values:
+You may keep using up to ten optional private fallback source values:
 
 ```text
 REDDIT_SOURCE_1
@@ -132,7 +134,7 @@ or:
 https://www.reddit.com/r/example/new/
 ```
 
-Yoink builds a temporary private `settings.json` on the GitHub runner. The real source values are not written into the repository.
+Yoink builds a temporary private `settings.json` on the GitHub runner. The real source values are not written into the repository. You do not need another numbered secret for sources added with the viewer’s gray `+` button.
 
 Add these Worker-deployment secrets:
 
@@ -183,7 +185,7 @@ CONTACT_EMAIL
 }
 ```
 
-The private `REDDIT_SOURCE_*` secrets replace the placeholders during Yoink. Keep the R2 prefix as `gallery/`.
+The optional private `REDDIT_SOURCE_*` secrets replace the placeholders during Yoink. Yoink then reads `_internal/reddit-sources.json`, adds every source entered through the private viewer, removes duplicates, and discards any harmless placeholder left over. Keep the R2 prefix as `gallery/`.
 
 # 6. Yoink
 
@@ -213,22 +215,25 @@ GitHub repository
 Yoink does this:
 
 1. Checks out the repository.
-2. Inserts the private source secrets into temporary settings.
+2. Inserts any numbered private source secrets into temporary settings.
 3. Installs Python, FFmpeg, and the collector packages.
-4. Records and masks the GitHub runner IP.
-5. Restores the small R2 download-history database.
-6. Connects to Tailscale and selects the private exit node.
-7. Confirms the public route changed.
-8. Downloads new media.
-9. Stops using the exit node.
-10. Confirms GitHub's direct route returned.
-11. Uploads media to R2.
-12. Writes the gallery index and saves download history.
+4. Reads `_internal/reddit-sources.json` directly from R2.
+5. Merges, validates, deduplicates, and masks every private source.
+6. Records and masks the GitHub runner IP.
+7. Restores the small R2 download-history database.
+8. Connects to Tailscale and selects the private exit node.
+9. Confirms the public route changed.
+10. Downloads new media.
+11. Stops using the exit node.
+12. Confirms GitHub's direct route returned.
+13. Uploads media to R2.
+14. Writes the gallery index and saves download history.
 
 `app.py` supports these internal modes:
 
 | Mode | Job |
 |---|---|
+| `prepare-sources` | Merges numbered secrets with the private R2 source list |
 | `restore` | Downloads the saved history database |
 | `download` | Downloads new media |
 | `upload` | Uploads media, index, and history |
@@ -306,6 +311,7 @@ The Worker routes are:
 |---|---|
 | `/` | Loads the viewer |
 | `/api/random` | Picks a random indexed item using the selected filter |
+| `POST /api/sources` | Adds one validated subreddit to the private R2 source list |
 | `/media/<encoded-key>` | Streams one indexed R2 object, including video range requests |
 
 The Worker reads `gallery-index.json` through `env.MEDIA_BUCKET`. It only accepts indexed keys beginning with `gallery/`.
@@ -313,6 +319,18 @@ The Worker reads `gallery-index.json` through `env.MEDIA_BUCKET`. It only accept
 The Worker's in-memory index cache lasts 60 seconds. A corrected index may therefore take up to one minute to appear in the viewer.
 
 The viewer validates every random-item response before replacing the current media. It automatically retries temporary server failures, timeouts, empty replies, malformed JSON, and invalid media addresses up to three times. If all attempts fail, the current media stays visible and the viewer shows a useful retry message instead of Safari's generic parsing error.
+
+## Add a subreddit from the viewer
+
+1. Open the certificate-protected GParty viewer.
+2. Tap the transparent gray **+** centered between **All** and the GitHub/email icons.
+3. Type a subreddit name such as `pics`.
+4. Tap **Add**.
+5. Wait for `Added. Yoink will use it next run.`
+
+You may also enter `r/pics` or a complete Reddit subreddit URL. Invalid names are rejected. Adding the same subreddit twice, including with different capitalization, does not create a duplicate.
+
+The Worker creates `_internal/reddit-sources.json` automatically the first time this succeeds. The object stays private in R2 and never enters the gallery index. The add request must come from the same viewer page and must include a client certificate that Cloudflare reports as successfully verified.
 
 # 10. Publish Worker changes
 
@@ -336,6 +354,15 @@ bucket_name = "<R2_BUCKET_NAME>"
 ```
 
 Committing Worker code does not update the live site. The manual deployment workflow does.
+
+The deployment configuration explicitly sets:
+
+```toml
+workers_dev = false
+preview_urls = false
+```
+
+This keeps both the normal `workers.dev` address and version preview addresses disabled after every deployment. The certificate-protected custom hostname remains the intended route.
 
 # 11. Download the Windows deduper
 
@@ -625,6 +652,7 @@ pyinstaller --clean --noconfirm GPartyDeduper.spec
 | Deploy workflow binding | `worker/worker.js` | `MEDIA_BUCKET` |
 | GitHub R2 bucket secret | Collector, Flush, deployment | `R2_BUCKET_NAME` |
 | Deduper `R2_BUCKET_NAME` | The same R2 library | Same bucket |
+| Viewer `POST /api/sources` | Yoink `prepare-sources` mode | `_internal/reddit-sources.json` |
 
 # 23. License
 

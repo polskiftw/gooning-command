@@ -1,5 +1,5 @@
-name: Build Custom FFmpeg 9
-run-name: Build Custom FFmpeg 9
+name: Build Custom FFmpeg 10
+run-name: Build Custom FFmpeg 10
 
 on:
   workflow_dispatch:
@@ -22,17 +22,9 @@ jobs:
       - name: Checkout workflow files
         uses: actions/checkout@v4
 
-      - name: Replace REST stable-tag lookup with Git
+      - name: Replace REST tag lookup with Git
         shell: pwsh
-        run: |
-          $path = "${{ github.workspace }}\.github\ffmpeg-build\build.ps1"
-          $content = [IO.File]::ReadAllText($path)
-          $pattern = '(?s)function Resolve-LatestStableTag \{.*?\n\}'
-          $replacement = "function Resolve-LatestStableTag {`n    Write-Stage 'Resolve latest stable FFmpeg tag with Git'`n    `$remoteTags = & git ls-remote --tags --refs https://github.com/FFmpeg/FFmpeg.git 2>&1`n    if (`$LASTEXITCODE -ne 0) { throw \"Unable to query FFmpeg tags with Git:``n`$(`$remoteTags | Out-String)\" }`n    `$stable = `$remoteTags | ForEach-Object { if (`$_ -match 'refs/tags/(n\d+\.\d+(?:\.\d+)?)$') { `$Matches[1] } } | Where-Object { `$_ } | Sort-Object { [version]((`$_.TrimStart('n')) -replace '^([0-9]+\.[0-9]+)$','`$1.0') } -Descending | Select-Object -First 1`n    if (-not `$stable) { throw 'Unable to resolve latest stable FFmpeg tag from Git.' }`n    return `$stable`n}"
-          $updated = [regex]::Replace($content, $pattern, $replacement, 1)
-          if ($updated -eq $content) { throw 'Stable-tag resolver replacement did not apply.' }
-          if ($updated -match 'Invoke-RestMethod') { throw 'REST stable-tag lookup remains after replacement.' }
-          [IO.File]::WriteAllText($path, $updated, [System.Text.UTF8Encoding]::new($false))
+        run: '& "${{ github.workspace }}\.github\ffmpeg-build\patch-stable-tag-resolver.ps1"'
 
       - name: Validate PowerShell build scripts
         shell: pwsh
@@ -68,8 +60,7 @@ jobs:
       - name: Prepare stable checkpoint
         if: steps.stable.outcome == 'success'
         shell: pwsh
-        run: |
-          & "${{ github.workspace }}\.github\ffmpeg-build\package-success.ps1" -Variant stable
+        run: '& "${{ github.workspace }}\.github\ffmpeg-build\package-success.ps1" -Variant stable'
 
       - name: Upload stable checkpoint before master
         if: steps.stable.outcome == 'success'
@@ -93,8 +84,7 @@ jobs:
       - name: Prepare stable and master artifact
         if: steps.stable.outcome == 'success' && steps.master.outcome == 'success'
         shell: pwsh
-        run: |
-          & "${{ github.workspace }}\.github\ffmpeg-build\package-success.ps1" -Variant all
+        run: '& "${{ github.workspace }}\.github\ffmpeg-build\package-success.ps1" -Variant all'
 
       - name: Upload stable and master directly
         if: steps.stable.outcome == 'success' && steps.master.outcome == 'success'
@@ -109,8 +99,7 @@ jobs:
       - name: Collect direct diagnostics
         if: always() && (steps.stable.outcome != 'success' || steps.master.outcome != 'success')
         shell: pwsh
-        run: |
-          & "${{ github.workspace }}\.github\ffmpeg-build\package-diagnostics.ps1"
+        run: '& "${{ github.workspace }}\.github\ffmpeg-build\package-diagnostics.ps1"'
 
       - name: Upload diagnostics without an inner ZIP
         if: always() && (steps.stable.outcome != 'success' || steps.master.outcome != 'success')

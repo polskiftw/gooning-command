@@ -419,8 +419,15 @@ function Assert-Features([string]$Folder, [string]$Label) {
     foreach ($exe in Get-ChildItem $Folder -Filter *.exe) {
         $deps = & $dumpbinPath /dependents $exe.FullName 2>&1 | Out-String
         Add-Content -Path (Join-Path $Folder 'pe-dependencies.txt') -Value "`n[$($exe.Name)]`n$deps"
-        $forbidden = $deps -split "`r?`n" | Where-Object { $_ -match '\.dll' -and $_ -notmatch '(?i)(KERNEL32|USER32|ADVAPI32|SHELL32|OLE32|OLEAUT32|WS2_32|BCRYPT|CRYPT32|GDI32|COMDLG32|WINMM|MFPLAT|MF|MFOBJECTS|D3D11|D3D12|DXGI|VULKAN-1|NVENCODEAPI64|NVCUVID|NVCUDA|UCRTBASE|VCRUNTIME|MSVCP|API-MS-WIN|EXT-MS-WIN)' }
-        if ($forbidden) { throw "$Label has unexpected DLL dependencies:`n$($forbidden -join "`n")" }
+        $dependencyNames = [regex]::Matches($deps, '(?im)^\s*([A-Z0-9._-]+\.dll)\s*$') |
+            ForEach-Object { $_.Groups[1].Value } |
+            Sort-Object -Unique
+        $forbidden = $dependencyNames | Where-Object {
+            $name = $_
+            ($name -notmatch '(?i)^(VULKAN-1|NVENCODEAPI64|NVCUVID|NVCUDA)\.dll$') -and
+                (-not (Test-Path -LiteralPath (Join-Path ([Environment]::SystemDirectory) $name) -PathType Leaf))
+        }
+        if ($forbidden) { throw "$Label has non-system DLL dependencies:`n$($forbidden -join "`n")" }
     }
 }
 

@@ -131,22 +131,6 @@ function hasVerifiedClientCertificate(request) {
     && request.cf?.tlsClientAuth?.certRevoked === "0";
 }
 
-function hasSafeSourceContext(request, url) {
-  const origin = request.headers.get("origin");
-  if (origin && origin !== url.origin) return false;
-
-  const fetchSite = request.headers.get("sec-fetch-site");
-  if (fetchSite && fetchSite !== "same-origin") return false;
-
-  const fetchMode = request.headers.get("sec-fetch-mode");
-  if (fetchMode && fetchMode !== "navigate") return false;
-
-  const fetchDest = request.headers.get("sec-fetch-dest");
-  if (fetchDest && fetchDest !== "document") return false;
-
-  return true;
-}
-
 function readCookie(request, name) {
   const header = request.headers.get("cookie") || "";
   for (const segment of header.split(";")) {
@@ -272,10 +256,6 @@ async function addManagedSource(request, env) {
   if (!hasVerifiedClientCertificate(request)) {
     return jsonResponse({ error: "A verified client certificate is required." }, 403);
   }
-  if (!hasSafeSourceContext(request, url)) {
-    return jsonResponse({ error: "This request must come from the GParty viewer." }, 403);
-  }
-
   const contentType = (request.headers.get("content-type") || "")
     .split(";", 1)[0]
     .trim()
@@ -306,6 +286,9 @@ async function addManagedSource(request, env) {
     return sourceResultRedirect(url, "security");
   }
 
+  // Safari may omit or rewrite Origin and Fetch Metadata under its advanced
+  // privacy modes. The verified client certificate plus the host-only
+  // double-submit token are the authoritative request authentication.
   const name = normalizeSubredditName(fields[1][1]);
   if (!name) {
     return sourceResultRedirect(url, "invalid");

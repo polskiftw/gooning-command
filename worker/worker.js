@@ -34,7 +34,7 @@ export default {
       console.error("Viewer request failed", problem);
       const pathname = new URL(request.url).pathname;
       response =
-        pathname === "/api/random"
+        pathname === "/api/random" || pathname === "/api/sources"
           ? new Response(
               JSON.stringify({ error: "Random media is temporarily unavailable." }),
               {

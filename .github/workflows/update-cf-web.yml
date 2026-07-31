@@ -1,5 +1,5 @@
 # IMPORTANT: Increment the trailing revision every time this workflow file changes.
-name: update-cf-web 1
+name: update-cf-web 2
 
 on:
   workflow_dispatch:
@@ -28,9 +28,9 @@ jobs:
           set -euo pipefail
 
           DEPLOY_SHA="$(git rev-parse HEAD)"
-          grep -Fq 'SOURCE_CSRF_COOKIE = "__Host-gparty-source-csrf"' worker/viewer.js
-          if grep -Fq 'This request must come from the GParty viewer.' worker/viewer.js; then
-            echo "Refusing to deploy the obsolete source-form authentication."
+          grep -Fq 'SOURCE_REQUEST_HEADER = "x-gparty-source-request"' worker/viewer.js
+          if grep -Fq '__Host-gparty-source-csrf' worker/viewer.js; then
+            echo "Refusing to deploy the obsolete CSRF-cookie source form."
             exit 1
           fi
 
@@ -38,7 +38,7 @@ jobs:
           {
             echo "### Cloudflare Worker deployment"
             echo
-            echo "- Workflow revision: 1"
+            echo "- Workflow revision: 2"
             echo "- Branch: main"
             echo "- Commit: \`${DEPLOY_SHA}\`"
           } >> "${GITHUB_STEP_SUMMARY}"

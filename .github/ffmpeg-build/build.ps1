@@ -237,6 +237,36 @@ function Write-FfmpegOptions {
     Set-Content -Path (Join-Path $suiteRoot 'build\ffmpeg_options.txt') -Value $options -Encoding ASCII
 }
 
+function Patch-MabsLibvpxIncludePath {
+    $scriptPath = Join-Path $suiteRoot 'build\media-suite_compile.sh'
+    if (-not (Test-Path $scriptPath)) {
+        throw 'The MABS compile script is missing; cannot apply the libvpx include-path fix.'
+    }
+
+    $content = [IO.File]::ReadAllText($scriptPath)
+    $marker = '# GParty: force libvpx to include its generated out-of-tree build directory.'
+    if ($content.Contains($marker)) { return }
+
+    $pattern = "(?m)^    sed -i 's;HAVE_GNU_STRIP=yes;HAVE_GNU_STRIP=no;' -- \\./\\*\\.mk\\r?\\n    do_make$"
+    $regex = [regex]::new($pattern)
+    $matches = $regex.Matches($content)
+    if ($matches.Count -ne 1) {
+        throw "Expected exactly one libvpx build hook in MABS, found $($matches.Count)."
+    }
+
+    $newline = if ($content.Contains("`r`n")) { "`r`n" } else { "`n" }
+    $replacement = @(
+        '    sed -i ''s;HAVE_GNU_STRIP=yes;HAVE_GNU_STRIP=no;'' -- ./*.mk'
+        '    # GParty: force libvpx to include its generated out-of-tree build directory.'
+        '    sed -i ''s;$(CC) $(INTERNAL_CFLAGS) $(CFLAGS);$(CC) -I$(CURDIR) $(INTERNAL_CFLAGS) $(CFLAGS);g'' Makefile'
+        '    sed -i ''s;$(CXX) $(INTERNAL_CFLAGS) $(CXXFLAGS);$(CXX) -I$(CURDIR) $(INTERNAL_CFLAGS) $(CXXFLAGS);g'' Makefile'
+        '    do_make'
+    ) -join $newline
+
+    $content = $regex.Replace($content, [System.Text.RegularExpressions.MatchEvaluator]{ param($match) $replacement }, 1)
+    [IO.File]::WriteAllText($scriptPath, $content, [Text.UTF8Encoding]::new($false))
+}
+
 function Resolve-LatestStableTag {
     Write-Stage 'Resolve latest stable FFmpeg tag'
     $tags = Invoke-RestMethod -Headers @{ 'User-Agent' = 'custom-ffmpeg-builder' } -Uri 'https://api.github.com/repos/FFmpeg/FFmpeg/tags?per_page=100'
@@ -367,6 +397,8 @@ try {
         Invoke-Logged 'Clone media-autobuild_suite fresh' { git clone --depth 1 https://github.com/m-ab-s/media-autobuild_suite.git $suiteRoot }
         Copy-Item (Join-Path $repoRoot '.github\ffmpeg-build\README.txt') $diagRoot -Force
     }
+
+    Patch-MabsLibvpxIncludePath
 
     $versionsPath = Join-Path $metaRoot 'resolved-versions.txt'
     if ($Variant -eq 'stable') {

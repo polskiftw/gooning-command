@@ -244,18 +244,15 @@ function Patch-MabsLibvpxIncludePath {
     }
 
     $content = [IO.File]::ReadAllText($scriptPath)
-    $marker = '# GParty: force libvpx to include its generated out-of-tree build directory.'
+    $marker = '# GParty libvpx generated-include patch v2.'
     if ($content.Contains($marker)) { return }
 
-    $pattern = "(?m)^    sed -i 's;HAVE_GNU_STRIP=yes;HAVE_GNU_STRIP=no;' -- \./\*\.mk\r?\n    do_make$"
-    $regex = [regex]::new($pattern)
-    $matches = $regex.Matches($content)
-    if ($matches.Count -ne 1) {
-        throw "Expected exactly one libvpx build hook in MABS, found $($matches.Count)."
-    }
-
     $newline = if ($content.Contains("`r`n")) { "`r`n" } else { "`n" }
-    $replacement = @(
+    $pristine = @(
+        '    sed -i ''s;HAVE_GNU_STRIP=yes;HAVE_GNU_STRIP=no;'' -- ./*.mk'
+        '    do_make'
+    ) -join $newline
+    $legacy = @(
         '    sed -i ''s;HAVE_GNU_STRIP=yes;HAVE_GNU_STRIP=no;'' -- ./*.mk'
         '    # GParty: force libvpx to include its generated out-of-tree build directory.'
         '    sed -i ''s;$(CC) $(INTERNAL_CFLAGS) $(CFLAGS);$(CC) -I$(CURDIR) $(INTERNAL_CFLAGS) $(CFLAGS);g'' Makefile'
@@ -263,7 +260,32 @@ function Patch-MabsLibvpxIncludePath {
         '    do_make'
     ) -join $newline
 
-    $content = $regex.Replace($content, [System.Text.RegularExpressions.MatchEvaluator]{ param($match) $replacement }, 1)
+    [string[]]$candidates = @($pristine, $legacy) | Where-Object { $content.Contains($_) }
+    if ($candidates.Count -ne 1) {
+        throw "Expected exactly one supported libvpx build hook in MABS, found $($candidates.Count)."
+    }
+
+    $replacement = @(
+        '    sed -i ''s;HAVE_GNU_STRIP=yes;HAVE_GNU_STRIP=no;'' -- ./*.mk'
+        '    # GParty libvpx generated-include patch v2.'
+        '    test -f Makefile || { echo "libvpx Makefile was not generated." >&2; exit 1; }'
+        '    test -s vpx_config.h || { echo "libvpx vpx_config.h was not generated." >&2; exit 1; }'
+        '    sed -i ''s;$(CC) $(INTERNAL_CFLAGS) $(CFLAGS);$(CC) -I$(CURDIR) $(INTERNAL_CFLAGS) $(CFLAGS);g'' Makefile'
+        '    sed -i ''s;$(CXX) $(INTERNAL_CFLAGS) $(CXXFLAGS);$(CXX) -I$(CURDIR) $(INTERNAL_CFLAGS) $(CXXFLAGS);g'' Makefile'
+        '    sed -i ''s;$(AS) $(ASFLAGS);$(AS) -I$(CURDIR)/ $(ASFLAGS);g'' Makefile'
+        '    sed -i ''s;--depfile=$@ $(ASFLAGS);--depfile=$@ -I$(CURDIR)/ $(ASFLAGS);g'' Makefile'
+        '    grep -Fq ''$(CC) -I$(CURDIR) $(INTERNAL_CFLAGS) $(CFLAGS)'' Makefile || { echo "libvpx C include-path patch did not apply." >&2; exit 1; }'
+        '    grep -Fq ''$(CXX) -I$(CURDIR) $(INTERNAL_CFLAGS) $(CXXFLAGS)'' Makefile || { echo "libvpx C++ include-path patch did not apply." >&2; exit 1; }'
+        '    grep -Fq ''$(AS) -I$(CURDIR)/ $(ASFLAGS)'' Makefile || { echo "libvpx assembler include-path patch did not apply." >&2; exit 1; }'
+        '    grep -Fq -- ''--depfile=$@ -I$(CURDIR)/ $(ASFLAGS)'' Makefile || { echo "libvpx assembler dependency-path patch did not apply." >&2; exit 1; }'
+        '    if grep -Fq ''$(CC) $(INTERNAL_CFLAGS) $(CFLAGS)'' Makefile || grep -Fq ''$(CXX) $(INTERNAL_CFLAGS) $(CXXFLAGS)'' Makefile || grep -Fq ''$(AS) $(ASFLAGS)'' Makefile || grep -Fq -- ''--depfile=$@ $(ASFLAGS)'' Makefile; then'
+        '        echo "libvpx still contains an unpatched generated-include command." >&2'
+        '        exit 1'
+        '    fi'
+        '    do_make'
+    ) -join $newline
+
+    $content = $content.Replace($candidates[0], $replacement)
     [IO.File]::WriteAllText($scriptPath, $content, [System.Text.UTF8Encoding]::new($false))
 }
 

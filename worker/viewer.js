@@ -5,9 +5,8 @@ const INDEX_KEY = "gallery-index.json";
 const SOURCE_CONFIG_KEY = "_internal/reddit-sources.json";
 const SUBREDDIT_NAME_PATTERN = /^[A-Za-z0-9_]{3,21}$/;
 const MAX_MANAGED_SOURCES = 500;
-const MAX_SOURCE_FORM_BYTES = 1024;
-const SOURCE_CSRF_COOKIE = "__Host-gparty-source-csrf";
-const SOURCE_CSRF_PATTERN = /^[a-f0-9]{64}$/;
+const MAX_SOURCE_REQUEST_BYTES = 1024;
+const SOURCE_REQUEST_HEADER = "x-gparty-source-request";
 const ALLOWED_EXTENSIONS = ["jpg", "jpeg", "png", "gif", "webp", "mp4", "m4v", "webm"];
 const STILL_EXTENSIONS = new Set(["jpg", "jpeg", "png", "webp"]);
 const CLIP_EXTENSIONS = new Set(["gif", "mp4", "m4v", "webm"]);
@@ -18,7 +17,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === "/robots.txt") return robotsResponse();
-    if (url.pathname === "/") return viewerPageResponse(request, env.CONTACT_EMAIL);
+    if (url.pathname === "/") return htmlResponse(renderAppHtml(env.CONTACT_EMAIL));
     if (url.pathname === "/style.css") return assetResponse(APP_STYLE, "text/css; charset=utf-8");
     if (url.pathname === "/app.js") return assetResponse(APP_SCRIPT, "text/javascript; charset=utf-8");
     if (url.pathname === "/api/random") return randomMedia(request, env);
@@ -131,51 +130,6 @@ function hasVerifiedClientCertificate(request) {
     && request.cf?.tlsClientAuth?.certRevoked === "0";
 }
 
-function readCookie(request, name) {
-  const header = request.headers.get("cookie") || "";
-  for (const segment of header.split(";")) {
-    const separator = segment.indexOf("=");
-    if (separator < 0) continue;
-    if (segment.slice(0, separator).trim() === name) {
-      return segment.slice(separator + 1).trim();
-    }
-  }
-  return "";
-}
-
-function createSourceCsrfToken() {
-  const bytes = new Uint8Array(32);
-  crypto.getRandomValues(bytes);
-  return [...bytes]
-    .map((value) => value.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-function sourceCsrfTokenForPage(request) {
-  const existing = readCookie(request, SOURCE_CSRF_COOKIE);
-  return SOURCE_CSRF_PATTERN.test(existing) ? existing : createSourceCsrfToken();
-}
-
-function sourceCsrfCookie(token) {
-  return `${SOURCE_CSRF_COOKIE}=${token}; Path=/; Secure; HttpOnly; SameSite=Strict`;
-}
-
-function equalSourceCsrfTokens(cookieToken, formToken) {
-  if (
-    !SOURCE_CSRF_PATTERN.test(cookieToken)
-    || !SOURCE_CSRF_PATTERN.test(formToken)
-    || cookieToken.length !== formToken.length
-  ) {
-    return false;
-  }
-
-  let difference = 0;
-  for (let index = 0; index < cookieToken.length; index += 1) {
-    difference |= cookieToken.charCodeAt(index) ^ formToken.charCodeAt(index);
-  }
-  return difference === 0;
-}
-
 async function readManagedSources(env) {
   const object = await env.MEDIA_BUCKET.get(SOURCE_CONFIG_KEY);
   if (!object) return { object: null, sources: [] };
@@ -239,59 +193,52 @@ async function readLimitedTextBody(request, maximumBytes) {
   }
 }
 
-function sourceResultRedirect(url, result) {
-  const location = new URL("/", url.origin);
-  location.searchParams.set("source_result", result);
-  return new Response(null, {
-    status: 303,
-    headers: {
-      location: location.toString(),
-      "cache-control": "no-store",
-    },
-  });
-}
-
 async function addManagedSource(request, env) {
-  const url = new URL(request.url);
   if (!hasVerifiedClientCertificate(request)) {
     return jsonResponse({ error: "A verified client certificate is required." }, 403);
   }
+  if (request.headers.get(SOURCE_REQUEST_HEADER) !== "1") {
+    return jsonResponse({ error: "This source request is not authorized." }, 403);
+  }
+
   const contentType = (request.headers.get("content-type") || "")
     .split(";", 1)[0]
     .trim()
     .toLowerCase();
-  if (contentType !== "application/x-www-form-urlencoded") {
-    return jsonResponse({ error: "Expected a browser form submission." }, 415);
+  if (contentType !== "application/json") {
+    return jsonResponse({ error: "Expected a JSON request." }, 415);
   }
 
-  const body = await readLimitedTextBody(request, MAX_SOURCE_FORM_BYTES);
+  const body = await readLimitedTextBody(request, MAX_SOURCE_REQUEST_BYTES);
   if (body.tooLarge) {
     return jsonResponse({ error: "That request is too large." }, 413);
   }
   if (body.text === null) {
-    return sourceResultRedirect(url, "invalid");
+    return jsonResponse({ error: "The subreddit request was unreadable." }, 400);
   }
 
-  const fields = [...new URLSearchParams(body.text).entries()];
+  let payload;
+  try {
+    payload = JSON.parse(body.text);
+  } catch {
+    return jsonResponse({ error: "The subreddit request was unreadable." }, 400);
+  }
   if (
-    fields.length !== 2
-    || fields[0][0] !== "csrf"
-    || fields[1][0] !== "subreddit"
+    !payload
+    || typeof payload !== "object"
+    || Array.isArray(payload)
+    || Object.keys(payload).length !== 1
+    || typeof payload.subreddit !== "string"
   ) {
-    return sourceResultRedirect(url, "security");
+    return jsonResponse({ error: "The subreddit request was invalid." }, 400);
   }
 
-  const cookieToken = readCookie(request, SOURCE_CSRF_COOKIE);
-  if (!equalSourceCsrfTokens(cookieToken, fields[0][1])) {
-    return sourceResultRedirect(url, "security");
-  }
-
-  // Safari may omit or rewrite Origin and Fetch Metadata under its advanced
-  // privacy modes. The verified client certificate plus the host-only
-  // double-submit token are the authoritative request authentication.
-  const name = normalizeSubredditName(fields[1][1]);
+  const name = normalizeSubredditName(payload.subreddit);
   if (!name) {
-    return sourceResultRedirect(url, "invalid");
+    return jsonResponse(
+      { error: "Enter a subreddit name such as pics, r/pics, or a Reddit subreddit URL." },
+      400,
+    );
   }
 
   const wanted = name.toLowerCase();
@@ -299,14 +246,14 @@ async function addManagedSource(request, env) {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const { object, sources } = await readManagedSources(env);
       if (sources.some((source) => source.toLowerCase() === wanted)) {
-        return sourceResultRedirect(url, "exists");
+        return jsonResponse({ added: false, alreadyExists: true, count: sources.length });
       }
       if (sources.length >= MAX_MANAGED_SOURCES) {
-        return sourceResultRedirect(url, "full");
+        return jsonResponse({ error: "The private source list is full." }, 409);
       }
 
       sources.push(name);
-      const payload = JSON.stringify({
+      const storedBody = JSON.stringify({
         version: 1,
         updated_at: new Date().toISOString(),
         sources,
@@ -316,7 +263,7 @@ async function addManagedSource(request, env) {
           ? { "If-Match": object.httpEtag }
           : { "If-None-Match": "*" },
       );
-      const stored = await env.MEDIA_BUCKET.put(SOURCE_CONFIG_KEY, payload, {
+      const stored = await env.MEDIA_BUCKET.put(SOURCE_CONFIG_KEY, storedBody, {
         onlyIf,
         httpMetadata: {
           contentType: "application/json; charset=utf-8",
@@ -328,15 +275,18 @@ async function addManagedSource(request, env) {
         },
       });
       if (stored) {
-        return sourceResultRedirect(url, "added");
+        return jsonResponse({ added: true, alreadyExists: false, count: sources.length }, 201);
       }
     }
   } catch (problem) {
     console.error("Private source update failed", problem);
-    return sourceResultRedirect(url, "unavailable");
+    return jsonResponse({ error: "The private source list is temporarily unavailable." }, 503);
   }
 
-  return sourceResultRedirect(url, "conflict");
+  return jsonResponse(
+    { error: "The source list changed at the same moment. Please tap Add once more." },
+    409,
+  );
 }
 
 async function serveMedia(request, env, key) {
@@ -369,19 +319,11 @@ function robotsResponse() {
   });
 }
 
-function viewerPageResponse(request, contactEmail) {
-  const csrfToken = sourceCsrfTokenForPage(request);
-  return htmlResponse(renderAppHtml(contactEmail, csrfToken), {
-    "set-cookie": sourceCsrfCookie(csrfToken),
-  });
-}
-
-function htmlResponse(body, additionalHeaders = {}) {
+function htmlResponse(body) {
   return new Response(body, {
     headers: {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
-      ...additionalHeaders,
     },
   });
 }
@@ -413,17 +355,13 @@ function escapeHtmlAttribute(value) {
     .replaceAll(">", "&gt;");
 }
 
-function renderAppHtml(contactEmail, sourceCsrfToken) {
+function renderAppHtml(contactEmail) {
   const email = String(contactEmail || "").trim();
   if (!email) throw new Error("CONTACT_EMAIL secret is missing");
-  if (!SOURCE_CSRF_PATTERN.test(sourceCsrfToken)) {
-    throw new Error("Source form security token is invalid");
-  }
   const escapedEmail = escapeHtmlAttribute(email);
   return APP_HTML
     .replaceAll("__CONTACT_EMAIL_HREF__", `mailto:${escapedEmail}`)
-    .replaceAll("__CONTACT_EMAIL_LABEL__", `Email ${escapedEmail}`)
-    .replaceAll("__SOURCE_CSRF_TOKEN__", sourceCsrfToken);
+    .replaceAll("__CONTACT_EMAIL_LABEL__", `Email ${escapedEmail}`);
 }
 
 const APP_HTML = String.raw`<!doctype html>
@@ -460,7 +398,6 @@ const APP_HTML = String.raw`<!doctype html>
   <div id="error"></div>
   <dialog id="source-dialog" aria-labelledby="source-dialog-title">
     <form id="source-dialog-body" method="post" action="/api/sources" accept-charset="UTF-8">
-      <input type="hidden" name="csrf" value="__SOURCE_CSRF_TOKEN__">
       <div id="source-dialog-title">Add subreddit</div>
       <label for="source-input">Subreddit name</label>
       <input id="source-input" name="subreddit" type="text" maxlength="128" placeholder="pics" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" required>

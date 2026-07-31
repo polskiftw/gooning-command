@@ -5,6 +5,7 @@ const INDEX_KEY = "gallery-index.json";
 const SOURCE_CONFIG_KEY = "_internal/reddit-sources.json";
 const SUBREDDIT_NAME_PATTERN = /^[A-Za-z0-9_]{3,21}$/;
 const MAX_MANAGED_SOURCES = 500;
+const MAX_SOURCE_FORM_BYTES = 1024;
 const ALLOWED_EXTENSIONS = ["jpg", "jpeg", "png", "gif", "webp", "mp4", "m4v", "webm"];
 const STILL_EXTENSIONS = new Set(["jpg", "jpeg", "png", "webp"]);
 const CLIP_EXTENSIONS = new Set(["gif", "mp4", "m4v", "webm"]);
@@ -155,6 +156,53 @@ async function readManagedSources(env) {
   return { object, sources: cleaned };
 }
 
+async function readLimitedTextBody(request, maximumBytes) {
+  const declaredLength = Number(request.headers.get("content-length") || "0");
+  if (Number.isFinite(declaredLength) && declaredLength > maximumBytes) {
+    return { tooLarge: true, text: "" };
+  }
+  if (!request.body) return { tooLarge: false, text: "" };
+
+  const reader = request.body.getReader();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let total = 0;
+  let text = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maximumBytes) {
+        await reader.cancel();
+        return { tooLarge: true, text: "" };
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+    return { tooLarge: false, text };
+  } catch {
+    try {
+      await reader.cancel();
+    } catch {
+      // The stream may already be closed.
+    }
+    return { tooLarge: false, text: null };
+  }
+}
+
+function sourceResultRedirect(url, result) {
+  const location = new URL("/", url.origin);
+  location.searchParams.set("source_result", result);
+  return new Response(null, {
+    status: 303,
+    headers: {
+      location: location.toString(),
+      "cache-control": "no-store",
+    },
+  });
+}
+
 async function addManagedSource(request, env) {
   const url = new URL(request.url);
   if (!hasVerifiedClientCertificate(request)) {
@@ -163,71 +211,79 @@ async function addManagedSource(request, env) {
   if (request.headers.get("origin") !== url.origin) {
     return jsonResponse({ error: "This request must come from the GParty viewer." }, 403);
   }
-  const contentType = (request.headers.get("content-type") || "").toLowerCase();
-  if (!contentType.startsWith("application/json")) {
-    return jsonResponse({ error: "Expected a JSON request." }, 415);
+  const fetchSite = request.headers.get("sec-fetch-site");
+  if (fetchSite && fetchSite !== "same-origin") {
+    return jsonResponse({ error: "Cross-site source changes are forbidden." }, 403);
   }
-  const declaredLength = Number(request.headers.get("content-length") || "0");
-  if (declaredLength > 1024) {
+
+  const contentType = (request.headers.get("content-type") || "")
+    .split(";", 1)[0]
+    .trim()
+    .toLowerCase();
+  if (contentType !== "application/x-www-form-urlencoded") {
+    return jsonResponse({ error: "Expected a browser form submission." }, 415);
+  }
+
+  const body = await readLimitedTextBody(request, MAX_SOURCE_FORM_BYTES);
+  if (body.tooLarge) {
     return jsonResponse({ error: "That request is too large." }, 413);
   }
-
-  let payload;
-  try {
-    payload = await request.json();
-  } catch {
-    return jsonResponse({ error: "The subreddit request was unreadable." }, 400);
+  if (body.text === null) {
+    return sourceResultRedirect(url, "invalid");
   }
 
-  const name = normalizeSubredditName(payload?.subreddit);
+  const fields = [...new URLSearchParams(body.text).entries()];
+  if (fields.length !== 1 || fields[0][0] !== "subreddit") {
+    return sourceResultRedirect(url, "invalid");
+  }
+  const name = normalizeSubredditName(fields[0][1]);
   if (!name) {
-    return jsonResponse(
-      { error: "Enter a subreddit name such as pics, r/pics, or a Reddit subreddit URL." },
-      400,
-    );
+    return sourceResultRedirect(url, "invalid");
   }
 
   const wanted = name.toLowerCase();
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    const { object, sources } = await readManagedSources(env);
-    if (sources.some((source) => source.toLowerCase() === wanted)) {
-      return jsonResponse({ added: false, alreadyExists: true, count: sources.length });
-    }
-    if (sources.length >= MAX_MANAGED_SOURCES) {
-      return jsonResponse({ error: "The private source list is full." }, 409);
-    }
+  try {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const { object, sources } = await readManagedSources(env);
+      if (sources.some((source) => source.toLowerCase() === wanted)) {
+        return sourceResultRedirect(url, "exists");
+      }
+      if (sources.length >= MAX_MANAGED_SOURCES) {
+        return sourceResultRedirect(url, "full");
+      }
 
-    sources.push(name);
-    const body = JSON.stringify({
-      version: 1,
-      updated_at: new Date().toISOString(),
-      sources,
-    }, null, 2) + "\n";
-    const onlyIf = new Headers(
-      object
-        ? { "If-Match": object.httpEtag }
-        : { "If-None-Match": "*" },
-    );
-    const stored = await env.MEDIA_BUCKET.put(SOURCE_CONFIG_KEY, body, {
-      onlyIf,
-      httpMetadata: {
-        contentType: "application/json; charset=utf-8",
-        cacheControl: "no-store",
-      },
-      customMetadata: {
-        private: "true",
-        purpose: "reddit-sources",
-      },
-    });
-    if (stored) {
-      return jsonResponse({ added: true, alreadyExists: false, count: sources.length }, 201);
+      sources.push(name);
+      const payload = JSON.stringify({
+        version: 1,
+        updated_at: new Date().toISOString(),
+        sources,
+      }, null, 2) + "\n";
+      const onlyIf = new Headers(
+        object
+          ? { "If-Match": object.httpEtag }
+          : { "If-None-Match": "*" },
+      );
+      const stored = await env.MEDIA_BUCKET.put(SOURCE_CONFIG_KEY, payload, {
+        onlyIf,
+        httpMetadata: {
+          contentType: "application/json; charset=utf-8",
+          cacheControl: "no-store",
+        },
+        customMetadata: {
+          private: "true",
+          purpose: "reddit-sources",
+        },
+      });
+      if (stored) {
+        return sourceResultRedirect(url, "added");
+      }
     }
+  } catch (problem) {
+    console.error("Private source update failed", problem);
+    return sourceResultRedirect(url, "unavailable");
   }
 
-  return jsonResponse(
-    { error: "The source list changed at the same moment. Please tap Add once more." },
-    409,
-  );
+  return sourceResultRedirect(url, "conflict");
 }
 
 async function serveMedia(request, env, key) {
@@ -338,16 +394,16 @@ const APP_HTML = String.raw`<!doctype html>
   </div>
   <div id="error"></div>
   <dialog id="source-dialog" aria-labelledby="source-dialog-title">
-    <div id="source-dialog-body">
+    <form id="source-dialog-body" method="post" action="/api/sources" accept-charset="UTF-8">
       <div id="source-dialog-title">Add subreddit</div>
       <label for="source-input">Subreddit name</label>
-      <input id="source-input" type="text" maxlength="128" placeholder="pics" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false">
+      <input id="source-input" name="subreddit" type="text" maxlength="128" placeholder="pics" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" required>
       <div id="source-feedback" aria-live="polite"></div>
       <div id="source-actions">
         <button id="source-close" type="button">Cancel</button>
-        <button id="source-add" type="button">Add</button>
+        <button id="source-add" type="submit">Add</button>
       </div>
-    </div>
+    </form>
   </dialog>
 </body>
 </html>`;

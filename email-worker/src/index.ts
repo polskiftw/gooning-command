@@ -1,5 +1,10 @@
 import { EmailMessage } from "cloudflare:email";
-import PostalMime, { type Attachment, type Email } from "postal-mime";
+import PostalMime, {
+  type Address,
+  type Attachment,
+  type Email,
+  type Mailbox,
+} from "postal-mime";
 
 interface Env {
   EMAIL: SendEmail;
@@ -35,7 +40,6 @@ export default {
 
     const originalRecipient = `${incoming.localPart}@${DOMAIN}`;
     const cleanRecipientAddress = `${cleanLocalPart}@${DOMAIN}`;
-
     const parsed = await PostalMime.parse(message.raw);
     const raw = buildSanitizedMessage({
       parsed,
@@ -90,8 +94,9 @@ function buildSanitizedMessage(options: {
   const { parsed, originalRecipient, cleanRecipient, outboundFrom } = options;
   const boundaryMixed = randomBoundary("mixed");
   const boundaryAlternative = randomBoundary("alternative");
-  const senderAddress = parsed.from?.address || "unknown-sender@invalid.example";
-  const senderName = parsed.from?.name?.trim() || senderAddress;
+  const sender = getMailbox(parsed.from);
+  const senderAddress = sender?.address || "unknown-sender@invalid.example";
+  const senderName = sender?.name.trim() || senderAddress;
   const displayName = `${senderName} via gooning.party`;
 
   const subject = scrub(parsed.subject || "(no subject)", originalRecipient, cleanRecipient);
@@ -103,7 +108,7 @@ function buildSanitizedMessage(options: {
   const headers = [
     `From: ${encodeDisplayName(displayName)} <${outboundFrom}>`,
     `To: <${cleanRecipient}>`,
-    `Reply-To: ${formatMailbox(parsed.from?.name || "", senderAddress)}`,
+    `Reply-To: ${formatMailbox(sender?.name || "", senderAddress)}`,
     `Subject: ${encodeHeader(subject)}`,
     `Date: ${formatDate(parsed.date)}`,
     `Message-ID: <${crypto.randomUUID()}@${DOMAIN}>`,
@@ -129,6 +134,11 @@ function buildSanitizedMessage(options: {
   ];
 
   return `${headers.join("\r\n")}\r\n\r\n${parts.join("\r\n")}`;
+}
+
+function getMailbox(address?: Address): Mailbox | undefined {
+  if (!address || ("group" in address && address.group !== undefined)) return undefined;
+  return address;
 }
 
 function buildAlternative(text: string, html: string, boundary: string): string {
@@ -163,8 +173,20 @@ function buildAttachment(attachment: Attachment, boundary: string, index: number
     lines.push(`Content-ID: <${attachment.contentId.replace(/[<>\r\n]/g, "")}>`);
   }
 
-  lines.push("", wrapBase64(bytesToBase64(attachment.content)), "");
+  lines.push("", wrapBase64(attachmentToBase64(attachment)), "");
   return lines.join("\r\n");
+}
+
+function attachmentToBase64(attachment: Attachment): string {
+  if (typeof attachment.content === "string") {
+    return attachment.encoding === "base64"
+      ? attachment.content.replace(/\s+/g, "")
+      : bytesToBase64(new TextEncoder().encode(attachment.content));
+  }
+  const bytes = attachment.content instanceof Uint8Array
+    ? attachment.content
+    : new Uint8Array(attachment.content);
+  return bytesToBase64(bytes);
 }
 
 function scrub(value: string, originalAddress: string, cleanAddress: string): string {

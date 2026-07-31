@@ -1,7 +1,7 @@
 CUSTOM WINDOWS FFMPEG BUILD
 ===========================
 
-Run the workflow named "Build Custom FFmpeg 2" manually from GitHub Actions.
+Run the workflow named "Build Custom FFmpeg 3" manually from GitHub Actions.
 
 SUCCESS
 -------

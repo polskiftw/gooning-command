@@ -2,6 +2,9 @@ import APP_SCRIPT from "./app.js";
 import APP_STYLE from "./style.css";
 
 const INDEX_KEY = "gallery-index.json";
+const SOURCE_CONFIG_KEY = "_internal/reddit-sources.json";
+const SUBREDDIT_NAME_PATTERN = /^[A-Za-z0-9_]{3,21}$/;
+const MAX_MANAGED_SOURCES = 500;
 const ALLOWED_EXTENSIONS = ["jpg", "jpeg", "png", "gif", "webp", "mp4", "m4v", "webm"];
 const STILL_EXTENSIONS = new Set(["jpg", "jpeg", "png", "webp"]);
 const CLIP_EXTENSIONS = new Set(["gif", "mp4", "m4v", "webm"]);
@@ -16,6 +19,19 @@ export default {
     if (url.pathname === "/style.css") return assetResponse(APP_STYLE, "text/css; charset=utf-8");
     if (url.pathname === "/app.js") return assetResponse(APP_SCRIPT, "text/javascript; charset=utf-8");
     if (url.pathname === "/api/random") return randomMedia(request, env);
+    if (url.pathname === "/api/sources") {
+      if (request.method !== "POST") {
+        return new Response(JSON.stringify({ error: "Method not allowed." }), {
+          status: 405,
+          headers: {
+            "content-type": "application/json; charset=utf-8",
+            "cache-control": "no-store",
+            allow: "POST",
+          },
+        });
+      }
+      return addManagedSource(request, env);
+    }
 
     if (url.pathname.startsWith("/media/")) {
       let key;
@@ -76,6 +92,142 @@ async function randomMedia(request, env) {
     url: `/media/${encodeURIComponent(item.key)}`,
     total: choices.length,
   });
+}
+
+
+function normalizeSubredditName(value) {
+  let candidate = String(value || "").trim();
+  if (!candidate) return "";
+
+  if (/^https?:\/\//i.test(candidate)) {
+    let parsed;
+    try {
+      parsed = new URL(candidate);
+    } catch {
+      return "";
+    }
+    const hostname = parsed.hostname.toLowerCase();
+    if (!["reddit.com", "www.reddit.com", "old.reddit.com", "new.reddit.com"].includes(hostname)) {
+      return "";
+    }
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    if (parts.length < 2 || parts[0].toLowerCase() !== "r") return "";
+    candidate = parts[1];
+  } else {
+    candidate = candidate.replace(/^\/+|\/+$/g, "");
+    if (candidate.toLowerCase().startsWith("r/")) candidate = candidate.slice(2);
+    candidate = candidate.split("/")[0];
+  }
+
+  return SUBREDDIT_NAME_PATTERN.test(candidate) ? candidate : "";
+}
+
+function hasVerifiedClientCertificate(request) {
+  return request.cf?.tlsClientAuth?.certPresented === "1"
+    && request.cf?.tlsClientAuth?.certVerified === "SUCCESS";
+}
+
+async function readManagedSources(env) {
+  const object = await env.MEDIA_BUCKET.get(SOURCE_CONFIG_KEY);
+  if (!object) return { object: null, sources: [] };
+
+  let payload;
+  try {
+    payload = JSON.parse(await object.text());
+  } catch {
+    throw new Error("Private source configuration is unreadable.");
+  }
+
+  const sources = Array.isArray(payload) ? payload : payload?.sources;
+  if (!Array.isArray(sources)) {
+    throw new Error("Private source configuration has an invalid shape.");
+  }
+
+  const cleaned = [];
+  const seen = new Set();
+  for (const value of sources) {
+    const name = normalizeSubredditName(value);
+    const key = name.toLowerCase();
+    if (!name || seen.has(key)) continue;
+    seen.add(key);
+    cleaned.push(name);
+  }
+  return { object, sources: cleaned };
+}
+
+async function addManagedSource(request, env) {
+  const url = new URL(request.url);
+  if (!hasVerifiedClientCertificate(request)) {
+    return jsonResponse({ error: "A verified client certificate is required." }, 403);
+  }
+  if (request.headers.get("origin") !== url.origin) {
+    return jsonResponse({ error: "This request must come from the GParty viewer." }, 403);
+  }
+  const contentType = (request.headers.get("content-type") || "").toLowerCase();
+  if (!contentType.startsWith("application/json")) {
+    return jsonResponse({ error: "Expected a JSON request." }, 415);
+  }
+  const declaredLength = Number(request.headers.get("content-length") || "0");
+  if (declaredLength > 1024) {
+    return jsonResponse({ error: "That request is too large." }, 413);
+  }
+
+  let payload;
+  try {
+    payload = await request.json();
+  } catch {
+    return jsonResponse({ error: "The subreddit request was unreadable." }, 400);
+  }
+
+  const name = normalizeSubredditName(payload?.subreddit);
+  if (!name) {
+    return jsonResponse(
+      { error: "Enter a subreddit name such as pics, r/pics, or a Reddit subreddit URL." },
+      400,
+    );
+  }
+
+  const wanted = name.toLowerCase();
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const { object, sources } = await readManagedSources(env);
+    if (sources.some((source) => source.toLowerCase() === wanted)) {
+      return jsonResponse({ added: false, alreadyExists: true, count: sources.length });
+    }
+    if (sources.length >= MAX_MANAGED_SOURCES) {
+      return jsonResponse({ error: "The private source list is full." }, 409);
+    }
+
+    sources.push(name);
+    const body = JSON.stringify({
+      version: 1,
+      updated_at: new Date().toISOString(),
+      sources,
+    }, null, 2) + "\n";
+    const onlyIf = new Headers(
+      object
+        ? { "If-Match": object.httpEtag }
+        : { "If-None-Match": "*" },
+    );
+    const stored = await env.MEDIA_BUCKET.put(SOURCE_CONFIG_KEY, body, {
+      onlyIf,
+      httpMetadata: {
+        contentType: "application/json; charset=utf-8",
+        cacheControl: "no-store",
+      },
+      customMetadata: {
+        private: "true",
+        purpose: "reddit-sources",
+      },
+    });
+    if (stored) {
+      return jsonResponse({ added: true, alreadyExists: false, count: sources.length }, 201);
+    }
+  }
+
+  return jsonResponse(
+    { error: "The source list changed at the same moment. Please tap Add once more." },
+    409,
+  );
 }
 
 async function serveMedia(request, env, key) {
@@ -172,6 +324,9 @@ const APP_HTML = String.raw`<!doctype html>
         <option value="stills">Stills</option>
         <option value="clips">Clips</option>
       </select>
+      <button id="add-source-open" class="icon-action" type="button" aria-label="Add a subreddit">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
       <a class="icon-link" href="https://github.com/polskiftw/gparty" target="_blank" rel="noopener noreferrer" aria-label="Open GitHub repository">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .7a11.5 11.5 0 0 0-3.64 22.41c.58.11.79-.25.79-.56v-2.03c-3.22.7-3.9-1.37-3.9-1.37-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.71.08-.71 1.17.08 1.78 1.2 1.78 1.2 1.04 1.78 2.72 1.27 3.39.97.1-.75.4-1.27.74-1.56-2.57-.29-5.27-1.29-5.27-5.73 0-1.27.45-2.3 1.2-3.11-.12-.3-.52-1.48.11-3.08 0 0 .98-.31 3.16 1.19a10.9 10.9 0 0 1 5.75 0c2.18-1.5 3.16-1.19 3.16-1.19.63 1.6.23 2.78.11 3.08.74.81 1.2 1.84 1.2 3.11 0 4.45-2.71 5.43-5.29 5.72.42.36.79 1.06.79 2.14v3.16c0 .31.21.68.8.56A11.5 11.5 0 0 0 12 .7Z"/></svg>
       </a>
@@ -182,5 +337,17 @@ const APP_HTML = String.raw`<!doctype html>
     <span id="status"></span>
   </div>
   <div id="error"></div>
+  <dialog id="source-dialog" aria-labelledby="source-dialog-title">
+    <div id="source-dialog-body">
+      <div id="source-dialog-title">Add subreddit</div>
+      <label for="source-input">Subreddit name</label>
+      <input id="source-input" type="text" maxlength="128" placeholder="pics" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false">
+      <div id="source-feedback" aria-live="polite"></div>
+      <div id="source-actions">
+        <button id="source-close" type="button">Cancel</button>
+        <button id="source-add" type="button">Add</button>
+      </div>
+    </div>
+  </dialog>
 </body>
 </html>`;

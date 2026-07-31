@@ -1,7 +1,7 @@
 CUSTOM WINDOWS FFMPEG BUILD
 ===========================
 
-Run the workflow named "Build Custom FFmpeg 5" manually from GitHub Actions.
+Run the workflow named "Build Custom FFmpeg 6" manually from GitHub Actions.
 
 SUCCESS
 -------
@@ -49,7 +49,7 @@ BUILD POLICY
 * Stable is built and uploaded before master begins.
 * Latest stable and current master.
 * Static-only selected runtime dependencies; no bundled codec DLLs.
-* Aggressive i7-14700KF tuning: -O3, Raptor Lake target, LTO.
+* Aggressive i7-14700KF tuning: -O3 and Raptor Lake target.
 * RTX 4070 Super paths: NVENC, NVDEC, CUDA headers, D3D11VA, D3D12VA,
   Vulkan and libplacebo. Intel QSV and AMD AMF are excluded.
 * Normal local media, yt-dlp interoperability, subtitles, consumer codecs,
@@ -58,6 +58,12 @@ BUILD POLICY
   broad network transports, AviSynth, VapourSynth, frei0r and OpenCL are excluded.
 * The build fails rather than silently dropping a required feature or replacing a
   selected source dependency with an unexplained prebuilt runtime library.
+
+MAINTENANCE RULE
+----------------
+Every committed change to this custom FFmpeg build must increment the visible
+"Build Custom FFmpeg N" workflow number and update this README to match. This keeps
+new runs visually distinct from runs made with older build code.
 
 IMPORTANT LIMITS
 ----------------

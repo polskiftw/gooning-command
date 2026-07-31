@@ -75,6 +75,11 @@ def parse_config(path: Path) -> Config:
             "VIDEO_SAMPLE_SECONDS, MAX_VIDEO_FRAMES, PREVIEW_CACHE_MB, SCAN_WORKERS, and VIDEO_WORKERS must be numbers"
         ) from exc
 
+    # 300 was the old shipped default. Treat that untouched legacy value as 120
+    # so existing portable installs receive the faster setting automatically.
+    if max_video_frames == 300:
+        max_video_frames = 120
+
     if video_sample_seconds <= 0 or max_video_frames < 1 or preview_cache_mb < 100:
         raise ConfigError(
             "VIDEO_SAMPLE_SECONDS must be above 0, MAX_VIDEO_FRAMES at least 1, "

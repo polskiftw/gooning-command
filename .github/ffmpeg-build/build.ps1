@@ -100,7 +100,7 @@ dssim=2
 avs2=2
 dovitool=2
 hdr10plustool=2
-gifski=2
+gifski=3
 jo=2
 vlc=2
 CC=2
@@ -286,30 +286,6 @@ function Patch-MabsLibvpxIncludePath {
     [IO.File]::WriteAllText($scriptPath, $content, [System.Text.UTF8Encoding]::new($false))
 }
 
-function Patch-MabsGifskiFfmpegSource {
-    $scriptPath = Join-Path $suiteRoot 'build\media-suite_compile.sh'
-    if (-not (Test-Path $scriptPath)) {
-        throw 'The MABS compile script is missing; cannot redirect the Gifski FFmpeg helper source.'
-    }
-
-    $content = [IO.File]::ReadAllText($scriptPath)
-    $oldSource = 'if flavor=gifski do_vcs "https://git.ffmpeg.org/ffmpeg.git#branch=release/8.0"; then'
-    $newSource = 'if flavor=gifski do_vcs "https://github.com/FFmpeg/FFmpeg.git#branch=release/8.0"; then'
-    $oldCount = [regex]::Matches($content, [regex]::Escape($oldSource)).Count
-    $newCount = [regex]::Matches($content, [regex]::Escape($newSource)).Count
-
-    if ($oldCount -eq 0 -and $newCount -eq 1) { return }
-    if ($oldCount -ne 1 -or $newCount -ne 0) {
-        throw "Expected exactly one unpatched Gifski FFmpeg source hook; found old=$oldCount new=$newCount."
-    }
-
-    $content = $content.Replace($oldSource, $newSource)
-    if ([regex]::Matches($content, [regex]::Escape($newSource)).Count -ne 1) {
-        throw 'The Gifski FFmpeg GitHub mirror patch did not apply exactly once.'
-    }
-    [IO.File]::WriteAllText($scriptPath, $content, [System.Text.UTF8Encoding]::new($false))
-}
-
 function Resolve-LatestStableTag {
     Write-Stage 'Resolve latest stable FFmpeg tag'
     $tags = Invoke-RestMethod -Headers @{ 'User-Agent' = 'custom-ffmpeg-builder' } -Uri 'https://api.github.com/repos/FFmpeg/FFmpeg/tags?per_page=100'
@@ -478,7 +454,6 @@ try {
     }
 
     Patch-MabsLibvpxIncludePath
-    Patch-MabsGifskiFfmpegSource
 
     $versionsPath = Join-Path $metaRoot 'resolved-versions.txt'
     if ($Variant -eq 'stable') {

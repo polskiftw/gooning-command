@@ -12,9 +12,13 @@ INDEX_KEY=gallery-index.json
 # NUKE stays locked until this is YES.
 ALLOW_DELETE=NO
 
-# Video sample spacing and configurable GIF/video sample ceiling.
+# Samples still span the complete GIF/video. 120 is the speed/coverage sweet spot.
 VIDEO_SAMPLE_SECONDS=1
-MAX_VIDEO_FRAMES=300
+MAX_VIDEO_FRAMES=120
+
+# Tuned for Claire's i7-14700KF and fast fiber connection.
+SCAN_WORKERS=10
+VIDEO_WORKERS=3
 
 # Temporary on-disk preview cache size.
 PREVIEW_CACHE_MB=750

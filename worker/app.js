@@ -276,6 +276,7 @@
     full: "The private source list is full.",
     conflict: "The source list changed at the same moment. Please tap Add once more.",
     unavailable: "The private source list is temporarily unavailable.",
+    security: "The page security token was refreshed. Tap Add once more.",
   });
 
   function showSourceResult() {

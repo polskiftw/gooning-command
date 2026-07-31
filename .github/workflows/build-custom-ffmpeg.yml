@@ -1,4 +1,4 @@
-name: Build Custom FFmpeg 5
+name: Build Custom FFmpeg 6
 
 on:
   workflow_dispatch:

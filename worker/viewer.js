@@ -125,7 +125,17 @@ function normalizeSubredditName(value) {
 
 function hasVerifiedClientCertificate(request) {
   return request.cf?.tlsClientAuth?.certPresented === "1"
-    && request.cf?.tlsClientAuth?.certVerified === "SUCCESS";
+    && request.cf?.tlsClientAuth?.certVerified === "SUCCESS"
+    && request.cf?.tlsClientAuth?.certRevoked === "0";
+}
+
+function hasTrustedSourceContext(request, url) {
+  const origin = request.headers.get("origin");
+  if (origin) return origin === url.origin;
+
+  return request.headers.get("sec-fetch-site") === "same-origin"
+    && request.headers.get("sec-fetch-mode") === "navigate"
+    && request.headers.get("sec-fetch-dest") === "document";
 }
 
 async function readManagedSources(env) {
@@ -208,12 +218,8 @@ async function addManagedSource(request, env) {
   if (!hasVerifiedClientCertificate(request)) {
     return jsonResponse({ error: "A verified client certificate is required." }, 403);
   }
-  if (request.headers.get("origin") !== url.origin) {
+  if (!hasTrustedSourceContext(request, url)) {
     return jsonResponse({ error: "This request must come from the GParty viewer." }, 403);
-  }
-  const fetchSite = request.headers.get("sec-fetch-site");
-  if (fetchSite && fetchSite !== "same-origin") {
-    return jsonResponse({ error: "Cross-site source changes are forbidden." }, 403);
   }
 
   const contentType = (request.headers.get("content-type") || "")

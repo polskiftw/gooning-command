@@ -105,13 +105,19 @@ Add the Reddit cookie file as one Base64 line:
 REDDIT_COOKIES_BASE64
 ```
 
-Add up to four private source values:
+Add up to ten private source values:
 
 ```text
 REDDIT_SOURCE_1
 REDDIT_SOURCE_2
 REDDIT_SOURCE_3
 REDDIT_SOURCE_4
+REDDIT_SOURCE_5
+REDDIT_SOURCE_6
+REDDIT_SOURCE_7
+REDDIT_SOURCE_8
+REDDIT_SOURCE_9
+REDDIT_SOURCE_10
 ```
 
 A source value can be either:

@@ -139,6 +139,7 @@ function Write-FfmpegOptions {
 --extra-cflags=-O3 -march=raptorlake -mtune=raptorlake -flto
 --extra-cxxflags=-O3 -march=raptorlake -mtune=raptorlake -flto
 --extra-ldflags=-flto -static
+--extra-libs=-lcfgmgr32
 --enable-bzlib
 --enable-iconv
 --enable-lzma

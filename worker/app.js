@@ -8,6 +8,7 @@
   const sourceDialog = document.getElementById("source-dialog");
   const sourceInput = document.getElementById("source-input");
   const sourceFeedback = document.getElementById("source-feedback");
+  const sourceForm = document.getElementById("source-dialog-body");
   const sourceClose = document.getElementById("source-close");
   const sourceAdd = document.getElementById("source-add");
   const mobileQuery = window.matchMedia("(max-width: 700px)");
@@ -252,7 +253,6 @@
 
 
   function setSourceBusy(busy) {
-    sourceInput.disabled = busy;
     sourceAdd.disabled = busy;
     sourceClose.disabled = busy;
     sourceAdd.textContent = busy ? "Adding…" : "Add";
@@ -269,63 +269,49 @@
     if (sourceDialog.open) sourceDialog.close();
   }
 
-  async function addManagedSource() {
+  const SOURCE_RESULT_MESSAGES = Object.freeze({
+    added: "Added. Yoink will use it next run.",
+    exists: "That subreddit is already added.",
+    invalid: "Enter a subreddit name such as pics, r/pics, or a Reddit subreddit URL.",
+    full: "The private source list is full.",
+    conflict: "The source list changed at the same moment. Please tap Add once more.",
+    unavailable: "The private source list is temporarily unavailable.",
+  });
+
+  function showSourceResult() {
+    const currentUrl = new URL(window.location.href);
+    const result = currentUrl.searchParams.get("source_result");
+    if (!Object.hasOwn(SOURCE_RESULT_MESSAGES, result)) return;
+
+    currentUrl.searchParams.delete("source_result");
+    window.history.replaceState(
+      null,
+      "",
+      `${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}`,
+    );
+    sourceFeedback.textContent = SOURCE_RESULT_MESSAGES[result];
+    sourceInput.value = "";
+    sourceDialog.showModal();
+  }
+
+  function prepareSourceSubmission(event) {
     const subreddit = sourceInput.value.trim();
     if (!subreddit) {
+      event.preventDefault();
       sourceFeedback.textContent = "Type a subreddit name first.";
       sourceInput.focus();
       return;
     }
 
+    sourceInput.value = subreddit;
+    sourceFeedback.textContent = "Adding…";
     setSourceBusy(true);
-    sourceFeedback.textContent = "";
-    try {
-      const response = await fetch("/api/sources", {
-        method: "POST",
-        cache: "no-store",
-        credentials: "same-origin",
-        headers: {
-          accept: "application/json",
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({ subreddit }),
-      });
-      const contentType = response.headers.get("content-type") || "";
-      const data = contentType.toLowerCase().includes("application/json")
-        ? await response.json()
-        : null;
-      if (!response.ok) {
-        throw new Error(
-          data && typeof data.error === "string"
-            ? data.error
-            : "Adding the subreddit failed with error " + response.status + ".",
-        );
-      }
-
-      sourceInput.value = "";
-      sourceFeedback.textContent = data.alreadyExists
-        ? "That subreddit is already added."
-        : "Added. Yoink will use it next run.";
-    } catch (problem) {
-      sourceFeedback.textContent =
-        problem && problem.message
-          ? problem.message
-          : "The subreddit could not be added.";
-    } finally {
-      setSourceBusy(false);
-    }
   }
 
   next.addEventListener("click", loadRandom);
   addSourceOpen.addEventListener("click", openSourceDialog);
   sourceClose.addEventListener("click", closeSourceDialog);
-  sourceAdd.addEventListener("click", addManagedSource);
-  sourceInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      addManagedSource();
-    }
-  });
+  sourceForm.addEventListener("submit", prepareSourceSubmission);
   sourceDialog.addEventListener("click", (event) => {
     if (event.target === sourceDialog) closeSourceDialog();
   });
@@ -359,7 +345,10 @@
 
   window.addEventListener("resize", scheduleSizeRefresh);
   window.addEventListener("orientationchange", scheduleSizeRefresh);
-  window.addEventListener("pageshow", scheduleSizeRefresh);
+  window.addEventListener("pageshow", () => {
+    setSourceBusy(false);
+    scheduleSizeRefresh();
+  });
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", scheduleSizeRefresh);
   }
@@ -380,5 +369,6 @@
     }
   });
 
+  showSourceResult();
   loadRandom();
 })();

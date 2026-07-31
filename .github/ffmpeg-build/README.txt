@@ -1,7 +1,7 @@
 CUSTOM WINDOWS FFMPEG BUILD
 ===========================
 
-Run the workflow named "Build Custom FFmpeg 8" manually from GitHub Actions.
+Run the workflow named "Build Custom FFmpeg 9" manually from GitHub Actions.
 
 SUCCESS
 -------
@@ -63,8 +63,9 @@ BUILD POLICY
 MAINTENANCE RULE
 ----------------
 Every committed change to this custom FFmpeg build must increment both the visible
-"Build Custom FFmpeg N" workflow name and its run-name, then update this README to
-match. This keeps new runs visually distinct from runs made with older build code.
+"name:" and "run-name:" values to "Build Custom FFmpeg N" and update this README
+to match. The workflow must remain manual-only with only "workflow_dispatch" under
+"on:". This keeps new runs visually distinct without triggering builds on commits.
 
 IMPORTANT LIMITS
 ----------------

@@ -9,8 +9,7 @@
   },
   "send_email": [
     {
-      "name": "EMAIL",
-      "allowed_destination_addresses": ["YOUR_GMAIL_ADDRESS"]
+      "name": "EMAIL"
     }
   ],
   "secrets": {

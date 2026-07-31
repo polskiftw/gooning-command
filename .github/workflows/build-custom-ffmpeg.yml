@@ -1,5 +1,5 @@
-name: Build Custom FFmpeg 8
-run-name: Build Custom FFmpeg 8
+name: Build Custom FFmpeg 9
+run-name: Build Custom FFmpeg 9
 
 on:
   workflow_dispatch:
@@ -27,43 +27,12 @@ jobs:
         run: |
           $path = "${{ github.workspace }}\.github\ffmpeg-build\build.ps1"
           $content = [IO.File]::ReadAllText($path)
-          $old = @'
-function Resolve-LatestStableTag {
-    Write-Stage 'Resolve latest stable FFmpeg tag'
-    $tags = Invoke-RestMethod -Headers @{ 'User-Agent' = 'custom-ffmpeg-builder' } -Uri 'https://api.github.com/repos/FFmpeg/FFmpeg/tags?per_page=100'
-    $stable = $tags | Where-Object { $_.name -match '^n\d+\.\d+(\.\d+)?$' } | Sort-Object {
-        [version](($_.name.TrimStart('n')) -replace '^([0-9]+\.[0-9]+)$','$1.0')
-    } -Descending | Select-Object -First 1
-    if (-not $stable) { throw 'Unable to resolve latest stable FFmpeg tag.' }
-    return $stable.name
-}
-'@
-          $new = @'
-function Resolve-LatestStableTag {
-    Write-Stage 'Resolve latest stable FFmpeg tag with Git'
-    $remoteTags = & git ls-remote --tags --refs https://github.com/FFmpeg/FFmpeg.git 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "Unable to query FFmpeg tags with Git:`n$($remoteTags | Out-String)"
-    }
-    $stable = $remoteTags |
-        ForEach-Object {
-            if ($_ -match 'refs/tags/(n\d+\.\d+(?:\.\d+)?)$') { $Matches[1] }
-        } |
-        Where-Object { $_ } |
-        Sort-Object {
-            [version](($_.TrimStart('n')) -replace '^([0-9]+\.[0-9]+)$','$1.0')
-        } -Descending |
-        Select-Object -First 1
-    if (-not $stable) { throw 'Unable to resolve latest stable FFmpeg tag from Git.' }
-    return $stable
-}
-'@
-          $matches = ([regex]::Matches($content, [regex]::Escape($old))).Count
-          if ($matches -ne 1) {
-            throw "Expected exactly one REST stable-tag resolver, found $matches."
-          }
-          $content = $content.Replace($old, $new)
-          [IO.File]::WriteAllText($path, $content, [System.Text.UTF8Encoding]::new($false))
+          $pattern = '(?s)function Resolve-LatestStableTag \{.*?\n\}'
+          $replacement = "function Resolve-LatestStableTag {`n    Write-Stage 'Resolve latest stable FFmpeg tag with Git'`n    `$remoteTags = & git ls-remote --tags --refs https://github.com/FFmpeg/FFmpeg.git 2>&1`n    if (`$LASTEXITCODE -ne 0) { throw \"Unable to query FFmpeg tags with Git:``n`$(`$remoteTags | Out-String)\" }`n    `$stable = `$remoteTags | ForEach-Object { if (`$_ -match 'refs/tags/(n\d+\.\d+(?:\.\d+)?)$') { `$Matches[1] } } | Where-Object { `$_ } | Sort-Object { [version]((`$_.TrimStart('n')) -replace '^([0-9]+\.[0-9]+)$','`$1.0') } -Descending | Select-Object -First 1`n    if (-not `$stable) { throw 'Unable to resolve latest stable FFmpeg tag from Git.' }`n    return `$stable`n}"
+          $updated = [regex]::Replace($content, $pattern, $replacement, 1)
+          if ($updated -eq $content) { throw 'Stable-tag resolver replacement did not apply.' }
+          if ($updated -match 'Invoke-RestMethod') { throw 'REST stable-tag lookup remains after replacement.' }
+          [IO.File]::WriteAllText($path, $updated, [System.Text.UTF8Encoding]::new($false))
 
       - name: Validate PowerShell build scripts
         shell: pwsh

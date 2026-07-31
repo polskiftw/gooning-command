@@ -1,4 +1,4 @@
-name: Build Custom FFmpeg 1
+name: Build Custom FFmpeg 2
 
 on:
   workflow_dispatch:
@@ -20,6 +20,21 @@ jobs:
     steps:
       - name: Checkout workflow files
         uses: actions/checkout@v4
+
+      - name: Validate PowerShell build scripts
+        shell: pwsh
+        run: |
+          $allErrors = @()
+          Get-ChildItem "${{ github.workspace }}\.github\ffmpeg-build" -Filter *.ps1 | ForEach-Object {
+            $tokens = $null
+            $parseErrors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$parseErrors)
+            $allErrors += $parseErrors
+          }
+          if ($allErrors.Count -gt 0) {
+            $allErrors | ForEach-Object { Write-Host "$($_.Extent.File):$($_.Extent.StartLineNumber): $($_.Message)" }
+            throw 'PowerShell syntax validation failed.'
+          }
 
       - name: Prepare clean workspace
         shell: pwsh

@@ -20,7 +20,7 @@ const CONTENT_SECURITY_POLICY = [
   "font-src 'self'",
   "object-src 'none'",
   "base-uri 'none'",
-  "form-action 'none'",
+  "form-action 'self'",
   "frame-ancestors 'none'",
   "manifest-src 'none'",
 ].join("; ");

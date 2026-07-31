@@ -46,6 +46,8 @@ jobs:
           name = "${WORKER_NAME}"
           main = "${GITHUB_WORKSPACE}/worker/worker.js"
           compatibility_date = "2026-07-28"
+          workers_dev = false
+          preview_urls = false
 
           [[rules]]
           type = "Text"

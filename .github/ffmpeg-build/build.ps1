@@ -247,7 +247,7 @@ function Patch-MabsLibvpxIncludePath {
     $marker = '# GParty: force libvpx to include its generated out-of-tree build directory.'
     if ($content.Contains($marker)) { return }
 
-    $pattern = "(?m)^    sed -i 's;HAVE_GNU_STRIP=yes;HAVE_GNU_STRIP=no;' -- \\./\\*\\.mk\\r?\\n    do_make$"
+    $pattern = "(?m)^    sed -i 's;HAVE_GNU_STRIP=yes;HAVE_GNU_STRIP=no;' -- \./\*\.mk\r?\n    do_make$"
     $regex = [regex]::new($pattern)
     $matches = $regex.Matches($content)
     if ($matches.Count -ne 1) {
@@ -264,7 +264,7 @@ function Patch-MabsLibvpxIncludePath {
     ) -join $newline
 
     $content = $regex.Replace($content, [System.Text.RegularExpressions.MatchEvaluator]{ param($match) $replacement }, 1)
-    [IO.File]::WriteAllText($scriptPath, $content, [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($scriptPath, $content, [System.Text.UTF8Encoding]::new($false))
 }
 
 function Resolve-LatestStableTag {

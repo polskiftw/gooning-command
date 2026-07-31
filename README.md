@@ -146,7 +146,9 @@ Run **Actions → Flush → Run workflow** after an interrupted upload may have 
 
 Run **Actions → Audit Index → Run workflow** to compare the live index with R2 without modifying either one. It reports aggregate counts for duplicate keys, malformed metadata, incorrect random weighting, missing objects, and unindexed objects. It never prints media filenames or credentials, and the run turns red when it finds an integrity problem.
 
-Run **Actions → update-cf-web → Run workflow** to publish Worker source changes. Repository commits do not automatically deploy the live Worker.
+Run **Actions → update-cf-web 1 → Run workflow** to publish Worker source changes. Repository commits do not automatically deploy the live Worker.
+
+Workflow display names end with a revision number. Increment that number whenever the corresponding workflow file changes. `update-cf-web 1` explicitly checks out current `main`, records the exact deployed commit in the run summary, and refuses to deploy the obsolete source-form authentication. Start one new revision-1 run now; after that, rerunning a revision-1 deployment will still check out the newest `main`. Historical pre-revision deployment runs must not be rerun.
 
 ## Private viewer source manager
 

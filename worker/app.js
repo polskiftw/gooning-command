@@ -14,6 +14,7 @@
   let loading = false;
   let sizeMode = "fit";
   let showHint = true;
+  let resizeFrame = 0;
 
   const RANDOM_ATTEMPTS = 3;
   const RANDOM_TIMEOUT_MS = 12_000;
@@ -142,8 +143,8 @@
     if (mobileQuery.matches) {
       sizeMode = "fit";
       stage.classList.remove("native");
-      media.style.width = "100%";
-      media.style.height = "100%";
+      media.style.removeProperty("width");
+      media.style.removeProperty("height");
       stage.scrollLeft = 0;
       stage.scrollTop = 0;
       return;
@@ -348,9 +349,25 @@
     if (media) applySizeMode(media, false);
   }
 
-  window.addEventListener("resize", reapplyCurrentSize);
-  mobileQuery.addEventListener("change", reapplyCurrentSize);
-  document.addEventListener("fullscreenchange", reapplyCurrentSize);
+  function scheduleSizeRefresh() {
+    if (resizeFrame) window.cancelAnimationFrame(resizeFrame);
+    resizeFrame = window.requestAnimationFrame(() => {
+      resizeFrame = 0;
+      reapplyCurrentSize();
+    });
+  }
+
+  window.addEventListener("resize", scheduleSizeRefresh);
+  window.addEventListener("orientationchange", scheduleSizeRefresh);
+  window.addEventListener("pageshow", scheduleSizeRefresh);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", scheduleSizeRefresh);
+  }
+  if ("ResizeObserver" in window) {
+    new ResizeObserver(scheduleSizeRefresh).observe(stage);
+  }
+  mobileQuery.addEventListener("change", scheduleSizeRefresh);
+  document.addEventListener("fullscreenchange", scheduleSizeRefresh);
   document.addEventListener("keydown", (event) => {
     if (sourceDialog.open) return;
     if (event.code === "Space") {

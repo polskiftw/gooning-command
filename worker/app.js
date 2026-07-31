@@ -4,6 +4,12 @@
   const filter = document.getElementById("filter");
   const status = document.getElementById("status");
   const error = document.getElementById("error");
+  const addSourceOpen = document.getElementById("add-source-open");
+  const sourceDialog = document.getElementById("source-dialog");
+  const sourceInput = document.getElementById("source-input");
+  const sourceFeedback = document.getElementById("source-feedback");
+  const sourceClose = document.getElementById("source-close");
+  const sourceAdd = document.getElementById("source-add");
   const mobileQuery = window.matchMedia("(max-width: 700px)");
   let loading = false;
   let sizeMode = "fit";
@@ -243,7 +249,85 @@
     }
   }
 
+
+  function setSourceBusy(busy) {
+    sourceInput.disabled = busy;
+    sourceAdd.disabled = busy;
+    sourceClose.disabled = busy;
+    sourceAdd.textContent = busy ? "Adding…" : "Add";
+  }
+
+  function openSourceDialog() {
+    sourceFeedback.textContent = "";
+    sourceInput.value = "";
+    sourceDialog.showModal();
+    window.setTimeout(() => sourceInput.focus(), 0);
+  }
+
+  function closeSourceDialog() {
+    if (sourceDialog.open) sourceDialog.close();
+  }
+
+  async function addManagedSource() {
+    const subreddit = sourceInput.value.trim();
+    if (!subreddit) {
+      sourceFeedback.textContent = "Type a subreddit name first.";
+      sourceInput.focus();
+      return;
+    }
+
+    setSourceBusy(true);
+    sourceFeedback.textContent = "";
+    try {
+      const response = await fetch("/api/sources", {
+        method: "POST",
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ subreddit }),
+      });
+      const contentType = response.headers.get("content-type") || "";
+      const data = contentType.toLowerCase().includes("application/json")
+        ? await response.json()
+        : null;
+      if (!response.ok) {
+        throw new Error(
+          data && typeof data.error === "string"
+            ? data.error
+            : "Adding the subreddit failed with error " + response.status + ".",
+        );
+      }
+
+      sourceInput.value = "";
+      sourceFeedback.textContent = data.alreadyExists
+        ? "That subreddit is already added."
+        : "Added. Yoink will use it next run.";
+    } catch (problem) {
+      sourceFeedback.textContent =
+        problem && problem.message
+          ? problem.message
+          : "The subreddit could not be added.";
+    } finally {
+      setSourceBusy(false);
+    }
+  }
+
   next.addEventListener("click", loadRandom);
+  addSourceOpen.addEventListener("click", openSourceDialog);
+  sourceClose.addEventListener("click", closeSourceDialog);
+  sourceAdd.addEventListener("click", addManagedSource);
+  sourceInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      addManagedSource();
+    }
+  });
+  sourceDialog.addEventListener("click", (event) => {
+    if (event.target === sourceDialog) closeSourceDialog();
+  });
   filter.addEventListener("change", () => {
     showHint = false;
     loadRandom();
@@ -268,6 +352,7 @@
   mobileQuery.addEventListener("change", reapplyCurrentSize);
   document.addEventListener("fullscreenchange", reapplyCurrentSize);
   document.addEventListener("keydown", (event) => {
+    if (sourceDialog.open) return;
     if (event.code === "Space") {
       event.preventDefault();
       showHint = false;

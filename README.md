@@ -29,6 +29,7 @@ The shared storage contract is:
 |---|---|
 | Media prefix | `gallery/` |
 | Gallery index | `gallery-index.json` |
+| Private viewer-managed source list | `_internal/reddit-sources.json` |
 | Worker R2 binding | `MEDIA_BUCKET` |
 | Bucket selector | `R2_BUCKET_NAME` |
 
@@ -36,10 +37,11 @@ The shared storage contract is:
 
 | Path | Purpose |
 |---|---|
-| `app.py` | Collector, download history, R2 upload, and index generation |
+| `app.py` | Collector, private source-list merge, download history, R2 upload, and index generation |
 | `settings.json` | Collector limits, delays, formats, and fallback sources |
-| `worker/worker.js` | Cloudflare Worker routes and R2 media streaming |
-| `worker/app.js` | Browser viewer behavior |
+| `worker/worker.js` | Security headers around the Worker routes |
+| `worker/viewer.js` | Viewer HTML, random-media API, certificate-protected source API, and R2 media streaming |
+| `worker/app.js` | Browser viewer and add-subreddit behavior |
 | `worker/style.css` | Browser viewer styling |
 | `worker/wrangler.jsonc` | Local Wrangler entrypoint, asset rules, limits, and bucket binding |
 | `worker/repair_index.py` | Adds unindexed R2 media to the gallery index |
@@ -90,7 +92,7 @@ REDDIT_SOURCE_9
 REDDIT_SOURCE_10
 ```
 
-Each `REDDIT_SOURCE_*` value may be a subreddit name or a complete Reddit `/new/` URL. These runtime overrides keep the real source list out of the committed `settings.json`.
+Each optional `REDDIT_SOURCE_*` value may be a subreddit name or a complete Reddit `/new/` URL. These ten slots remain compatible as private fallback sources. New sources can also be added without editing GitHub settings by pressing the gray `+` in the certificate-protected viewer. The Worker stores those additions in the private R2 object `_internal/reddit-sources.json`, and Yoink merges both source sets before downloading.
 
 Worker deployment:
 
@@ -128,7 +130,7 @@ The Worker also requires its runtime `CONTACT_EMAIL` secret.
 }
 ```
 
-The private `REDDIT_SOURCE_*` secrets replace the placeholder entries before `app.py` runs. Keep `r2_gallery_prefix` aligned with the Worker, Flush, and deduper configuration.
+The private `REDDIT_SOURCE_*` secrets replace the placeholder entries. Before Reddit access begins, `app.py` also reads `_internal/reddit-sources.json`, removes duplicates, discards harmless placeholders, and builds one temporary private runtime list. Keep `r2_gallery_prefix` aligned with the Worker, Flush, and deduper configuration.
 
 ## Collector operation
 
@@ -138,13 +140,21 @@ Run **Actions → Yoink → Run workflow**, or allow its schedule to run:
 3,18,33,48 * * * *
 ```
 
-Yoink restores the archive database, selects the configured private exit node, downloads new media, restores the direct GitHub route, uploads media to R2, conditionally merges additions into `gallery-index.json`, and saves the archive.
+Yoink first merges the optional numbered secrets with sources added through the private viewer. It then restores the archive database, selects the configured private exit node, downloads new media, restores the direct GitHub route, uploads media to R2, conditionally merges additions into `gallery-index.json`, and saves the archive. Source names loaded from R2 are masked before later commands run.
 
 Run **Actions → Flush → Run workflow** after an interrupted upload may have placed media into R2 without updating the index. Flush adds missing valid objects to `gallery-index.json`; it never deletes media. Yoink, Flush, and the desktop deduper all use the same ETag-protected read/merge/write helper, so a concurrent writer must retry against the newest index instead of overwriting another writer's additions or removals.
 
 Run **Actions → Audit Index → Run workflow** to compare the live index with R2 without modifying either one. It reports aggregate counts for duplicate keys, malformed metadata, incorrect random weighting, missing objects, and unindexed objects. It never prints media filenames or credentials, and the run turns red when it finds an integrity problem.
 
 Run **Actions → update-cf-web → Run workflow** to publish Worker source changes. Repository commits do not automatically deploy the live Worker.
+
+## Private viewer source manager
+
+The certificate-protected viewer has a transparent gray `+` centered between the media filter and the GitHub/email links. Press it, enter a subreddit name such as `pics`, and press **Add**. The same box also accepts `r/pics` and a complete Reddit subreddit URL.
+
+The `POST /api/sources` endpoint requires a successfully verified mTLS client certificate, an exact same-origin request, and JSON. It validates and normalizes the name, rejects malformed input, ignores case-insensitive duplicates, and uses an ETag-protected R2 write so simultaneous additions cannot silently overwrite each other. The private source object is outside `gallery/`, is absent from `gallery-index.json`, and cannot be served by the media route. Yoink reads it on the next scheduled or manual run.
+
+Worker deployments set both `workers_dev = false` and `preview_urls = false`, preventing alternate public Worker URLs from bypassing the custom hostname's certificate protection.
 
 ## Windows GParty Deduper
 

@@ -7,6 +7,7 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -20,7 +21,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from deduper.index_store import merge_index_items, read_index_items
 
-APP_VERSION = "0.2.8"
+APP_VERSION = "0.2.9"
 BASE_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = Path(os.getenv("SETTINGS_PATH", BASE_DIR / "settings.json"))
 DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / ".run-data"))
@@ -29,6 +30,8 @@ CONFIG_PATH = DATA_DIR / "gallery-dl.generated.json"
 COOKIES_PATH = DATA_DIR / "reddit-cookies.txt"
 INDEX_KEY = os.getenv("R2_INDEX_KEY", "gallery-index.json")
 ARCHIVE_R2_KEY = os.getenv("R2_ARCHIVE_KEY", "_internal/gallery-dl-archive-v0.2.1.sqlite3")
+SOURCE_CONFIG_R2_KEY = os.getenv("R2_SOURCE_CONFIG_KEY", "_internal/reddit-sources.json")
+SUBREDDIT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_]{3,21}$")
 DOWNLOAD_ROOT = DATA_DIR / "downloads"
 RUN_STATE_PATH = DATA_DIR / "run-state.json"
 
@@ -148,6 +151,70 @@ def r2_client():
             read_timeout=120,
             tcp_keepalive=True,
         ),
+    )
+
+
+
+def normalize_reddit_source(value: str) -> str:
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    if re.fullmatch(r"placeholder\d+", value, flags=re.IGNORECASE):
+        return ""
+    if value.startswith(("https://", "http://")):
+        return value.rstrip("/") + "/"
+    value = value.strip("/")
+    if value.lower().startswith("r/"):
+        value = value[2:]
+    if not SUBREDDIT_NAME_PATTERN.fullmatch(value):
+        return ""
+    return f"https://www.reddit.com/r/{value}/new/"
+
+
+def prepare_managed_sources(settings: dict[str, Any], client, bucket: str) -> None:
+    try:
+        response = client.get_object(Bucket=bucket, Key=SOURCE_CONFIG_R2_KEY)
+    except ClientError as exc:
+        code = str(exc.response.get("Error", {}).get("Code", ""))
+        if code in {"NoSuchKey", "404", "NotFound"}:
+            managed_values: list[str] = []
+        else:
+            raise
+    else:
+        try:
+            payload = json.loads(response["Body"].read().decode("utf-8"))
+        finally:
+            response["Body"].close()
+        managed_values = payload if isinstance(payload, list) else payload.get("sources")
+        if not isinstance(managed_values, list):
+            raise RuntimeError("The private R2 source configuration has an invalid shape")
+
+    merged: list[str] = []
+    seen: set[str] = set()
+    for value in [*settings.get("sources", []), *managed_values]:
+        normalized = normalize_reddit_source(str(value))
+        if not normalized:
+            continue
+        key = normalized.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(normalized)
+
+    if not merged:
+        raise RuntimeError("No valid Reddit sources are configured")
+
+    settings["sources"] = merged
+    SETTINGS_PATH.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+
+    if os.getenv("GITHUB_ACTIONS", "").lower() == "true":
+        for value in merged:
+            print(f"::add-mask::{value}")
+
+    log.info(
+        "Prepared private runtime settings with %s total source(s), including %s viewer-managed value(s)",
+        len(merged),
+        len(managed_values),
     )
 
 
@@ -522,6 +589,12 @@ def main() -> int:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     try:
+        if mode == "prepare-sources":
+            client = r2_client()
+            bucket = required_env("R2_BUCKET_NAME")
+            prepare_managed_sources(settings, client, bucket)
+            return 0
+
         if mode == "restore":
             client = r2_client()
             bucket = required_env("R2_BUCKET_NAME")

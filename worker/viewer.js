@@ -6,6 +6,8 @@ const SOURCE_CONFIG_KEY = "_internal/reddit-sources.json";
 const SUBREDDIT_NAME_PATTERN = /^[A-Za-z0-9_]{3,21}$/;
 const MAX_MANAGED_SOURCES = 500;
 const MAX_SOURCE_FORM_BYTES = 1024;
+const SOURCE_CSRF_COOKIE = "__Host-gparty-source-csrf";
+const SOURCE_CSRF_PATTERN = /^[a-f0-9]{64}$/;
 const ALLOWED_EXTENSIONS = ["jpg", "jpeg", "png", "gif", "webp", "mp4", "m4v", "webm"];
 const STILL_EXTENSIONS = new Set(["jpg", "jpeg", "png", "webp"]);
 const CLIP_EXTENSIONS = new Set(["gif", "mp4", "m4v", "webm"]);
@@ -16,7 +18,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === "/robots.txt") return robotsResponse();
-    if (url.pathname === "/") return htmlResponse(renderAppHtml(env.CONTACT_EMAIL));
+    if (url.pathname === "/") return viewerPageResponse(request, env.CONTACT_EMAIL);
     if (url.pathname === "/style.css") return assetResponse(APP_STYLE, "text/css; charset=utf-8");
     if (url.pathname === "/app.js") return assetResponse(APP_SCRIPT, "text/javascript; charset=utf-8");
     if (url.pathname === "/api/random") return randomMedia(request, env);
@@ -129,13 +131,65 @@ function hasVerifiedClientCertificate(request) {
     && request.cf?.tlsClientAuth?.certRevoked === "0";
 }
 
-function hasTrustedSourceContext(request, url) {
+function hasSafeSourceContext(request, url) {
   const origin = request.headers.get("origin");
-  if (origin) return origin === url.origin;
+  if (origin && origin !== url.origin) return false;
 
-  return request.headers.get("sec-fetch-site") === "same-origin"
-    && request.headers.get("sec-fetch-mode") === "navigate"
-    && request.headers.get("sec-fetch-dest") === "document";
+  const fetchSite = request.headers.get("sec-fetch-site");
+  if (fetchSite && fetchSite !== "same-origin") return false;
+
+  const fetchMode = request.headers.get("sec-fetch-mode");
+  if (fetchMode && fetchMode !== "navigate") return false;
+
+  const fetchDest = request.headers.get("sec-fetch-dest");
+  if (fetchDest && fetchDest !== "document") return false;
+
+  return true;
+}
+
+function readCookie(request, name) {
+  const header = request.headers.get("cookie") || "";
+  for (const segment of header.split(";")) {
+    const separator = segment.indexOf("=");
+    if (separator < 0) continue;
+    if (segment.slice(0, separator).trim() === name) {
+      return segment.slice(separator + 1).trim();
+    }
+  }
+  return "";
+}
+
+function createSourceCsrfToken() {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return [...bytes]
+    .map((value) => value.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function sourceCsrfTokenForPage(request) {
+  const existing = readCookie(request, SOURCE_CSRF_COOKIE);
+  return SOURCE_CSRF_PATTERN.test(existing) ? existing : createSourceCsrfToken();
+}
+
+function sourceCsrfCookie(token) {
+  return `${SOURCE_CSRF_COOKIE}=${token}; Path=/; Secure; HttpOnly; SameSite=Strict`;
+}
+
+function equalSourceCsrfTokens(cookieToken, formToken) {
+  if (
+    !SOURCE_CSRF_PATTERN.test(cookieToken)
+    || !SOURCE_CSRF_PATTERN.test(formToken)
+    || cookieToken.length !== formToken.length
+  ) {
+    return false;
+  }
+
+  let difference = 0;
+  for (let index = 0; index < cookieToken.length; index += 1) {
+    difference |= cookieToken.charCodeAt(index) ^ formToken.charCodeAt(index);
+  }
+  return difference === 0;
 }
 
 async function readManagedSources(env) {
@@ -218,7 +272,7 @@ async function addManagedSource(request, env) {
   if (!hasVerifiedClientCertificate(request)) {
     return jsonResponse({ error: "A verified client certificate is required." }, 403);
   }
-  if (!hasTrustedSourceContext(request, url)) {
+  if (!hasSafeSourceContext(request, url)) {
     return jsonResponse({ error: "This request must come from the GParty viewer." }, 403);
   }
 
@@ -239,10 +293,20 @@ async function addManagedSource(request, env) {
   }
 
   const fields = [...new URLSearchParams(body.text).entries()];
-  if (fields.length !== 1 || fields[0][0] !== "subreddit") {
-    return sourceResultRedirect(url, "invalid");
+  if (
+    fields.length !== 2
+    || fields[0][0] !== "csrf"
+    || fields[1][0] !== "subreddit"
+  ) {
+    return sourceResultRedirect(url, "security");
   }
-  const name = normalizeSubredditName(fields[0][1]);
+
+  const cookieToken = readCookie(request, SOURCE_CSRF_COOKIE);
+  if (!equalSourceCsrfTokens(cookieToken, fields[0][1])) {
+    return sourceResultRedirect(url, "security");
+  }
+
+  const name = normalizeSubredditName(fields[1][1]);
   if (!name) {
     return sourceResultRedirect(url, "invalid");
   }
@@ -322,11 +386,19 @@ function robotsResponse() {
   });
 }
 
-function htmlResponse(body) {
+function viewerPageResponse(request, contactEmail) {
+  const csrfToken = sourceCsrfTokenForPage(request);
+  return htmlResponse(renderAppHtml(contactEmail, csrfToken), {
+    "set-cookie": sourceCsrfCookie(csrfToken),
+  });
+}
+
+function htmlResponse(body, additionalHeaders = {}) {
   return new Response(body, {
     headers: {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
+      ...additionalHeaders,
     },
   });
 }
@@ -358,13 +430,17 @@ function escapeHtmlAttribute(value) {
     .replaceAll(">", "&gt;");
 }
 
-function renderAppHtml(contactEmail) {
+function renderAppHtml(contactEmail, sourceCsrfToken) {
   const email = String(contactEmail || "").trim();
   if (!email) throw new Error("CONTACT_EMAIL secret is missing");
+  if (!SOURCE_CSRF_PATTERN.test(sourceCsrfToken)) {
+    throw new Error("Source form security token is invalid");
+  }
   const escapedEmail = escapeHtmlAttribute(email);
   return APP_HTML
     .replaceAll("__CONTACT_EMAIL_HREF__", `mailto:${escapedEmail}`)
-    .replaceAll("__CONTACT_EMAIL_LABEL__", `Email ${escapedEmail}`);
+    .replaceAll("__CONTACT_EMAIL_LABEL__", `Email ${escapedEmail}`)
+    .replaceAll("__SOURCE_CSRF_TOKEN__", sourceCsrfToken);
 }
 
 const APP_HTML = String.raw`<!doctype html>
@@ -401,6 +477,7 @@ const APP_HTML = String.raw`<!doctype html>
   <div id="error"></div>
   <dialog id="source-dialog" aria-labelledby="source-dialog-title">
     <form id="source-dialog-body" method="post" action="/api/sources" accept-charset="UTF-8">
+      <input type="hidden" name="csrf" value="__SOURCE_CSRF_TOKEN__">
       <div id="source-dialog-title">Add subreddit</div>
       <label for="source-input">Subreddit name</label>
       <input id="source-input" name="subreddit" type="text" maxlength="128" placeholder="pics" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" required>

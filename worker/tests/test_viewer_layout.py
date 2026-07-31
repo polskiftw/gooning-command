@@ -13,6 +13,7 @@ class ViewerLayoutHardeningTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.css = (WORKER_DIR / "style.css").read_text(encoding="utf-8")
         cls.script = (WORKER_DIR / "app.js").read_text(encoding="utf-8")
+        cls.viewer = (WORKER_DIR / "viewer.js").read_text(encoding="utf-8")
 
     def mobile_rule(self, selector: str) -> str:
         mobile_css = self.css.split("@media (max-width: 700px)", 1)[1]
@@ -57,6 +58,14 @@ class ViewerLayoutHardeningTests(unittest.TestCase):
         self.assertIn('window.addEventListener("orientationchange"', self.script)
         self.assertIn("new ResizeObserver(scheduleSizeRefresh).observe(stage)", self.script)
         self.assertIn('window.addEventListener("pageshow"', self.script)
+
+    def test_viewer_assets_revalidate_after_deployment(self) -> None:
+        asset_response = self.viewer.split("function assetResponse", 1)[1].split(
+            "function jsonResponse",
+            1,
+        )[0]
+        self.assertIn('"cache-control": "no-cache"', asset_response)
+        self.assertNotIn("max-age", asset_response)
 
 
 if __name__ == "__main__":

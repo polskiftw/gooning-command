@@ -273,7 +273,7 @@ function assetResponse(body, contentType) {
   return new Response(body, {
     headers: {
       "content-type": contentType,
-      "cache-control": "public, max-age=3600",
+      "cache-control": "no-cache",
     },
   });
 }

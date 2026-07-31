@@ -139,7 +139,6 @@ function Write-FfmpegOptions {
 --extra-cflags=-O3 -march=raptorlake -mtune=raptorlake -flto
 --extra-cxxflags=-O3 -march=raptorlake -mtune=raptorlake -flto
 --extra-ldflags=-flto -static
---pkg-config-flags=--static
 --enable-bzlib
 --enable-iconv
 --enable-lzma
@@ -218,7 +217,6 @@ function Write-FfmpegOptions {
 --disable-libdc1394
 --disable-indev=dshow
 --disable-indev=gdigrab
---disable-indev=lavfi
 --disable-outdev=sdl
 --enable-network
 --disable-protocols
@@ -288,6 +286,30 @@ function Patch-MabsLibvpxIncludePath {
     [IO.File]::WriteAllText($scriptPath, $content, [System.Text.UTF8Encoding]::new($false))
 }
 
+function Patch-MabsGifskiFfmpegSource {
+    $scriptPath = Join-Path $suiteRoot 'build\media-suite_compile.sh'
+    if (-not (Test-Path $scriptPath)) {
+        throw 'The MABS compile script is missing; cannot redirect the Gifski FFmpeg helper source.'
+    }
+
+    $content = [IO.File]::ReadAllText($scriptPath)
+    $oldSource = 'if flavor=gifski do_vcs "https://git.ffmpeg.org/ffmpeg.git#branch=release/8.0"; then'
+    $newSource = 'if flavor=gifski do_vcs "https://github.com/FFmpeg/FFmpeg.git#branch=release/8.0"; then'
+    $oldCount = [regex]::Matches($content, [regex]::Escape($oldSource)).Count
+    $newCount = [regex]::Matches($content, [regex]::Escape($newSource)).Count
+
+    if ($oldCount -eq 0 -and $newCount -eq 1) { return }
+    if ($oldCount -ne 1 -or $newCount -ne 0) {
+        throw "Expected exactly one unpatched Gifski FFmpeg source hook; found old=$oldCount new=$newCount."
+    }
+
+    $content = $content.Replace($oldSource, $newSource)
+    if ([regex]::Matches($content, [regex]::Escape($newSource)).Count -ne 1) {
+        throw 'The Gifski FFmpeg GitHub mirror patch did not apply exactly once.'
+    }
+    [IO.File]::WriteAllText($scriptPath, $content, [System.Text.UTF8Encoding]::new($false))
+}
+
 function Resolve-LatestStableTag {
     Write-Stage 'Resolve latest stable FFmpeg tag'
     $tags = Invoke-RestMethod -Headers @{ 'User-Agent' = 'custom-ffmpeg-builder' } -Uri 'https://api.github.com/repos/FFmpeg/FFmpeg/tags?per_page=100'
@@ -324,19 +346,33 @@ function Write-SourceCommits {
 function Run-Mabs([string]$Label, [string]$FfmpegPath) {
     Write-Ini -FfmpegPath $FfmpegPath
     Write-FfmpegOptions
-    $before = Get-ChildItem -Path $suiteRoot -Filter ffmpeg.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+
+    $binDir = Join-Path $suiteRoot 'local64\bin-video'
+    $expectedFfmpeg = Join-Path $binDir 'ffmpeg.exe'
+    $beforeWriteTime = if (Test-Path $expectedFfmpeg) {
+        (Get-Item -LiteralPath $expectedFfmpeg).LastWriteTimeUtc
+    } else {
+        [datetime]::MinValue
+    }
+
     Invoke-Logged "Build $Label" { cmd.exe /d /c "cd /d $suiteRoot && media-autobuild_suite.bat" }
-    $after = Get-ChildItem -Path $suiteRoot -Filter ffmpeg.exe -Recurse -File | Sort-Object LastWriteTime -Descending
-    $candidate = $after | Where-Object { $_.FullName -notin $before } | Select-Object -First 1
-    if (-not $candidate) { $candidate = $after | Select-Object -First 1 }
-    if (-not $candidate) { throw "MABS completed but no ffmpeg.exe was found for $Label." }
-    $binDir = $candidate.Directory.FullName
+
+    if (-not (Test-Path -LiteralPath $expectedFfmpeg -PathType Leaf)) {
+        throw "MABS completed but the expected $Label binary is missing: $expectedFfmpeg"
+    }
+    $afterWriteTime = (Get-Item -LiteralPath $expectedFfmpeg).LastWriteTimeUtc
+    if ($afterWriteTime -le $beforeWriteTime) {
+        throw "MABS did not refresh the expected $Label ffmpeg.exe; refusing to package a stale binary."
+    }
+
     $target = Join-Path $outRoot $Label
     New-Item -ItemType Directory -Force -Path $target | Out-Null
     foreach ($name in 'ffmpeg.exe','ffprobe.exe','ffplay.exe') {
         $source = Join-Path $binDir $name
-        if (-not (Test-Path $source)) { throw "$name was not produced for $Label." }
-        Copy-Item $source $target -Force
+        if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+            throw "$name was not produced in the expected MABS bin-video directory for $Label."
+        }
+        Copy-Item -LiteralPath $source -Destination $target -Force
     }
     return $target
 }
@@ -348,6 +384,7 @@ function Assert-Features([string]$Folder, [string]$Label) {
         encoders = @('libx264','libx265','libsvtav1','libaom-av1','librav1e','h264_nvenc','hevc_nvenc','av1_nvenc','libfdk_aac','libopus','libmp3lame')
         decoders = @('h264','hevc','av1','aac','opus','flac','ass','hdmv_pgs_subtitle','dvdsub')
         filters  = @('subtitles','libplacebo','vmaf','loudnorm','zscale','scale_cuda')
+        indevs = @('lavfi')
         protocols = @('file','pipe','http','https','tcp','tls','crypto','data')
         hwaccels = @('cuda','d3d11va','d3d12va','vulkan')
     }
@@ -355,21 +392,35 @@ function Assert-Features([string]$Folder, [string]$Label) {
         $text = & $ffmpeg "-$($entry.Key)" 2>&1 | Out-String
         Set-Content -Path (Join-Path $Folder "$($entry.Key).txt") -Value $text -Encoding UTF8
         foreach ($required in $entry.Value) {
-            if ($text -notmatch [regex]::Escape($required)) { throw "$Label is missing required $($entry.Key) feature: $required" }
+            $pattern = '(?m)^\s*(?:[A-Z\.]{3,8}\s+)?' + [regex]::Escape($required) + '(?:\s|$)'
+            if ($text -notmatch $pattern) {
+                throw "$Label is missing required $($entry.Key) feature: $required"
+            }
         }
     }
     $version = & $ffmpeg -version 2>&1 | Out-String
     Set-Content -Path (Join-Path $Folder 'build-info.txt') -Value $version -Encoding UTF8
-    if ($version -notmatch '--enable-static' -or $version -match '--enable-shared') { throw "$Label is not configured as static-only." }
+    if ($version -match '(?m)--enable-shared(?:\s|$)') {
+        throw "$Label was configured with shared FFmpeg libraries."
+    }
 
-    $dumpbin = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
-    if ($dumpbin) {
-        foreach ($exe in Get-ChildItem $Folder -Filter *.exe) {
-            $deps = & $dumpbin.Source /dependents $exe.FullName 2>&1 | Out-String
-            Add-Content -Path (Join-Path $Folder 'pe-dependencies.txt') -Value "`n[$($exe.Name)]`n$deps"
-            $forbidden = $deps -split "`r?`n" | Where-Object { $_ -match '\.dll' -and $_ -notmatch '(?i)(KERNEL32|USER32|ADVAPI32|SHELL32|OLE32|OLEAUT32|WS2_32|BCRYPT|CRYPT32|GDI32|COMDLG32|WINMM|MFPLAT|MF|MFOBJECTS|D3D11|D3D12|DXGI|VULKAN-1|NVENCODEAPI64|NVCUVID|NVCUDA|UCRTBASE|VCRUNTIME|MSVCP|API-MS-WIN|EXT-MS-WIN)' }
-            if ($forbidden) { throw "$Label has unexpected DLL dependencies:`n$($forbidden -join "`n")" }
+    $dumpbinPath = (Get-Command dumpbin.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source)
+    if (-not $dumpbinPath) {
+        $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+        if (Test-Path -LiteralPath $vswhere) {
+            $dumpbinPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe' |
+                Select-Object -First 1
         }
+    }
+    if (-not $dumpbinPath -or -not (Test-Path -LiteralPath $dumpbinPath -PathType Leaf)) {
+        throw 'dumpbin.exe is unavailable, so static dependency verification cannot be trusted.'
+    }
+
+    foreach ($exe in Get-ChildItem $Folder -Filter *.exe) {
+        $deps = & $dumpbinPath /dependents $exe.FullName 2>&1 | Out-String
+        Add-Content -Path (Join-Path $Folder 'pe-dependencies.txt') -Value "`n[$($exe.Name)]`n$deps"
+        $forbidden = $deps -split "`r?`n" | Where-Object { $_ -match '\.dll' -and $_ -notmatch '(?i)(KERNEL32|USER32|ADVAPI32|SHELL32|OLE32|OLEAUT32|WS2_32|BCRYPT|CRYPT32|GDI32|COMDLG32|WINMM|MFPLAT|MF|MFOBJECTS|D3D11|D3D12|DXGI|VULKAN-1|NVENCODEAPI64|NVCUVID|NVCUDA|UCRTBASE|VCRUNTIME|MSVCP|API-MS-WIN|EXT-MS-WIN)' }
+        if ($forbidden) { throw "$Label has unexpected DLL dependencies:`n$($forbidden -join "`n")" }
     }
 }
 
@@ -420,6 +471,7 @@ try {
     }
 
     Patch-MabsLibvpxIncludePath
+    Patch-MabsGifskiFfmpegSource
 
     $versionsPath = Join-Path $metaRoot 'resolved-versions.txt'
     if ($Variant -eq 'stable') {

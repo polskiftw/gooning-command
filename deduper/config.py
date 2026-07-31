@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,8 +20,10 @@ class Config:
     index_key: str = "gallery-index.json"
     allow_delete: bool = False
     video_sample_seconds: float = 1.0
-    max_video_frames: int = 300
+    max_video_frames: int = 120
     preview_cache_mb: int = 750
+    scan_workers: int = 10
+    video_workers: int = 3
 
     @property
     def endpoint_url(self) -> str:
@@ -63,16 +66,24 @@ def parse_config(path: Path) -> Config:
 
     try:
         video_sample_seconds = float(values.get("VIDEO_SAMPLE_SECONDS", "1"))
-        max_video_frames = int(values.get("MAX_VIDEO_FRAMES", "300"))
+        max_video_frames = int(values.get("MAX_VIDEO_FRAMES", "120"))
         preview_cache_mb = int(values.get("PREVIEW_CACHE_MB", "750"))
+        scan_workers = int(values.get("SCAN_WORKERS", "10"))
+        video_workers = int(values.get("VIDEO_WORKERS", "3"))
     except ValueError as exc:
-        raise ConfigError("VIDEO_SAMPLE_SECONDS, MAX_VIDEO_FRAMES, and PREVIEW_CACHE_MB must be numbers") from exc
+        raise ConfigError(
+            "VIDEO_SAMPLE_SECONDS, MAX_VIDEO_FRAMES, PREVIEW_CACHE_MB, SCAN_WORKERS, and VIDEO_WORKERS must be numbers"
+        ) from exc
 
     if video_sample_seconds <= 0 or max_video_frames < 1 or preview_cache_mb < 100:
         raise ConfigError(
             "VIDEO_SAMPLE_SECONDS must be above 0, MAX_VIDEO_FRAMES at least 1, "
             "and PREVIEW_CACHE_MB at least 100"
         )
+    if not 1 <= scan_workers <= 32:
+        raise ConfigError("SCAN_WORKERS must be between 1 and 32")
+    if not 1 <= video_workers <= scan_workers:
+        raise ConfigError("VIDEO_WORKERS must be between 1 and SCAN_WORKERS")
 
     return Config(
         account_id=values["R2_ACCOUNT_ID"],
@@ -85,4 +96,6 @@ def parse_config(path: Path) -> Config:
         video_sample_seconds=video_sample_seconds,
         max_video_frames=max_video_frames,
         preview_cache_mb=preview_cache_mb,
+        scan_workers=scan_workers,
+        video_workers=video_workers,
     )

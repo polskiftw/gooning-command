@@ -483,7 +483,6 @@ INDEX_KEY=gallery-index.json
 ALLOW_DELETE=NO
 VIDEO_SAMPLE_SECONDS=1
 MAX_VIDEO_FRAMES=300
-PREVIEW_CACHE_MB=750
 ```
 
 The four R2 values are the same kind of values stored in the GitHub secrets. Do not commit `config.txt`.
@@ -514,8 +513,10 @@ The first scan:
 4. Saves only the key, size, type, hashes, and scan information in local SQLite.
 5. Deletes the temporary media file.
 6. Repeats for the next object.
-7. Applies the current slider setting to find duplicate matches.
-8. Builds safe groups in which every queued candidate directly matches its survivor.
+7. Separates byte-identical SHA-256 groups into an invisible NUKE queue, automatically keeping one copy of each hash.
+8. Withholds every member of those SHA groups from perceptual review for this scan.
+9. Applies the current slider setting to find perceptual duplicate matches among the remaining objects.
+10. Builds safe groups in which every visible queued candidate directly matches its survivor.
 
 The first full scan is the long one. Later scans use the R2 key, ETag, size, and modified time to hash only new or changed objects.
 
@@ -525,13 +526,9 @@ The database lives here:
 data/gparty-deduper.sqlite3
 ```
 
-The application also keeps a size-limited preview cache under:
+Previews are fetched directly from R2 when a pair is shown. Stills and GIFs decode from memory. Video decoding uses a short-lived temporary file only because OpenCV requires a seekable filename; that file is deleted before the preview is displayed. There is no persistent `preview-cache` folder to manage or prune.
 
-```text
-data/preview-cache/
-```
-
-Neither folder is uploaded to R2 or GitHub.
+The database is not uploaded to R2 or GitHub.
 
 # 14. Hashes used by the deduper
 
@@ -565,13 +562,13 @@ The slider has 100 positions:
 
 The program uses a BK-tree for pHash and PDQ comparisons and banded frame lookup for vPDQ candidates. It does not blindly compare every object with every other object.
 
-Exact SHA-256 duplicates are always targets, even at the strictest slider position.
+Exact SHA-256 duplicates are always targets, even at the strictest slider position. They are not shown as review pairs. For every repeated SHA-256 value, the program silently chooses one survivor and queues every extra copy for NUKE. The complete group is skipped by pHash, PDQ, crop, and vPDQ for that scan. After NUKE leaves one copy, that survivor is released back into perceptual matching on the next SCAN.
 
 For each set of connected duplicate matches, the app chooses the best available survivor and queues only its direct matches. It then repeats with any remaining members, so an indirect A-to-B-to-C chain can produce multiple safe groups instead of an unverified A-to-C deletion pair. It prefers higher resolution, then longer duration, higher PDQ quality, and larger file size. The survivor is always shown on the left, and each right-side candidate is included in the next NUKE by default.
 
 # 16. Single-screen review
 
-The application never leaves its single working screen. Each pair shows:
+The application never leaves its single working screen. Exact SHA groups are intentionally absent from this screen. Each perceptual pair shows:
 
 - The automatically selected survivor on the left
 - The candidate scheduled for deletion on the right
@@ -590,9 +587,12 @@ The controls are:
 | `PREVIOUS` | Shows the previous pair |
 | `NEXT` | Shows the next pair |
 | `EXCLUDE FROM THIS NUKE` | Spares the right candidate for this scan and immediately advances |
-| `NUKE` | Immediately deletes all non-excluded right candidates |
+| `NUKE SHA ONLY` | Immediately deletes only invisible exact-SHA extras and leaves perceptual targets queued |
+| `NUKE` | Immediately deletes invisible SHA extras and all non-excluded right candidates |
 
 The keyboard Left and Right arrow keys perform the same navigation as PREVIOUS and NEXT. Navigation wraps at both ends. There are no delete-side selectors, skip button, separate review screen, or confirmation dialogs.
+
+Review navigation and **EXCLUDE FROM THIS NUKE** remain active while later matching stages run. The bottom progress line separately shows completed and total work for pHash, PDQ, crop-resistant matching, and vPDQ, plus a full-check percentage. It also shows how many exact SHA extras are waiting invisibly for NUKE.
 
 An exclusion remains visible if revisited, but lasts only until the next SCAN. A new scan rebuilds the candidate queue and makes the object eligible again if it still matches.
 
@@ -604,13 +604,15 @@ NUKE performs the queued R2 deletions.
 
 It:
 
-1. Deletes the queued media objects in R2 batches.
+1. Keeps exactly one object from every repeated SHA-256 group and deletes the invisible extra copies along with all non-excluded perceptual targets.
 2. Records each success or failure in local SQLite.
 3. Marks confirmed deletions locally.
 4. Removes confirmed deleted keys from `gallery-index.json`.
 5. Reports the number of deleted objects and reclaimed bytes.
 
 NUKE begins immediately when clicked. It does not open a confirmation dialog.
+
+**NUKE SHA ONLY** uses the same permanent R2 deletion and gallery-index cleanup path, but receives only the invisible exact-SHA queue. It does not delete or alter any perceptual review target. The normal **NUKE** receives both queues.
 
 If R2 deletes an object but the later index write fails, the deduper remembers those keys in a local cleanup queue. The next NUKE retries the gallery-index cleanup, including when there are no new media deletions.
 
@@ -642,8 +644,8 @@ Normal cleanup session:
 
 1. Open `GParty Deduper.exe`.
 2. Set the slider.
-3. Press **SCAN** and wait for detection to finish.
-4. Review every left/right pair with the buttons or keyboard arrows.
+3. Press **SCAN**.
+4. Review available left/right perceptual pairs with the buttons or keyboard arrows while later comparison stages continue if desired.
 5. Press **EXCLUDE FROM THIS NUKE** on any right-side candidate that should be spared.
 6. Press **NUKE** when ready.
 7. Wait up to 60 seconds for the Worker cache to refresh.

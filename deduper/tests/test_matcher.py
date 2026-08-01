@@ -8,6 +8,7 @@ from deduper.matcher import (
     acquire_pair_stages,
     acquire_pairs,
     hamming_hex,
+    partition_exact_duplicates,
     thresholds,
     vpdq_similarity,
 )
@@ -218,6 +219,36 @@ class MatcherTests(unittest.TestCase):
         self.assertEqual(len(pairs), 2)
         self.assertEqual({pair[0] for pair in pairs}, {"gallery/c.jpg"})
         self.assertEqual({pair[1] for pair in pairs}, {"gallery/a.jpg", "gallery/b.jpg"})
+
+    def test_exact_groups_are_withheld_from_visual_review_until_after_nuke(self) -> None:
+        shared = "e" * 64
+        unique = asset("gallery/unique.jpg", sha256="a" * 64)
+        small = asset(
+            "gallery/small.jpg", sha256=shared, width=640, height=480, size=50_000
+        )
+        large = asset(
+            "gallery/large.jpg", sha256=shared, width=1920, height=1080, size=200_000
+        )
+
+        visual_assets, deletions = partition_exact_duplicates([small, unique, large])
+
+        self.assertEqual([item.key for item in visual_assets], [unique.key])
+        self.assertEqual(deletions, [(large.key, small.key)])
+
+    def test_perceptual_stages_can_skip_exact_pair_generation(self) -> None:
+        shared = "f" * 64
+        stages = acquire_pair_stages(
+            [
+                asset("gallery/a.jpg", sha256=shared),
+                asset("gallery/b.jpg", sha256=shared),
+            ],
+            50,
+            include_exact=False,
+        )
+
+        stage, pairs = next(stages)
+        self.assertEqual(stage, "phash")
+        self.assertEqual(pairs, [])
 
     def test_transitive_chain_never_creates_an_indirect_deletion_pair(self) -> None:
         pairs = acquire_pairs(

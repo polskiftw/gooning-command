@@ -19,6 +19,3 @@ MAX_VIDEO_FRAMES=120
 # Tuned for Claire's i7-14700KF and fast fiber connection.
 SCAN_WORKERS=10
 VIDEO_WORKERS=3
-
-# Temporary on-disk preview cache size.
-PREVIEW_CACHE_MB=750

@@ -7,6 +7,7 @@ import unittest
 from deduper.config import Config
 
 try:
+    from deduper.preview import PreviewCancelled
     from deduper.r2 import R2Store
 except ModuleNotFoundError:
     R2Store = None
@@ -31,6 +32,23 @@ class FakeClient:
 
 @unittest.skipIf(R2Store is None, "boto3 is not installed in the lightweight test environment")
 class R2IndexTests(unittest.TestCase):
+    def test_preview_bytes_are_read_directly_from_r2(self) -> None:
+        store = object.__new__(R2Store)
+        store.config = Config("a", "b", "c", "bucket")
+        store.client = FakeClient({"preview": "direct"})
+
+        data = store.read_bytes("gallery/a.jpg")
+
+        self.assertEqual(json.loads(data), {"preview": "direct"})
+
+    def test_abandoned_preview_read_is_cancelled(self) -> None:
+        store = object.__new__(R2Store)
+        store.config = Config("a", "b", "c", "bucket")
+        store.client = FakeClient({"preview": "stale"})
+
+        with self.assertRaises(PreviewCancelled):
+            store.read_bytes("gallery/a.jpg", lambda: True)
+
     def test_removes_deleted_keys_from_index(self) -> None:
         store = object.__new__(R2Store)
         store.config = Config("a", "b", "c", "bucket")

@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 
 from .app import DeduperApp
-from .matcher import MatchingCancelled, acquire_pair_stages
+from .matcher import MatchingCancelled, acquire_pair_stages, partition_exact_duplicates
 from .scanner import scan_assets
 
 
@@ -45,29 +45,40 @@ class FastDeduperApp(DeduperApp):
                 )
 
             assets = self.database.all_hashed_assets()
+            visual_assets, sha_deletions = partition_exact_duplicates(assets)
+            sha_target_count = self.database.replace_sha_deletions(sha_deletions)
+            # A new scan resets the temporary visual-review decisions. Exact SHA
+            # groups live in their own invisible queue and never become previews.
+            self.database.replace_pairs([])
             self.database.set_matching_state("running")
             self._ui(
                 self._set_empty_pair_message,
-                "Comparison running…\n\nExact duplicates will appear as soon as they are saved.",
+                "Comparison running…\n\nVisual matches will appear as each stage finishes.",
             )
 
+            stage_totals = {
+                "pHash": len(visual_assets),
+                "PDQ": len(visual_assets),
+                "crop-resistant": len(visual_assets),
+                "vPDQ": sum(1 for asset in visual_assets if asset.vpdq_hashes),
+            }
+            self._ui(self._begin_matching_progress, stage_totals, sha_target_count)
+
             def matching_progress(stage: str, completed: int, total: int) -> None:
-                self._ui(
-                    self.status.set,
-                    f"MATCHING {stage} {completed}/{total} — saved results stay safe",
-                )
+                self._ui(self._update_matching_progress, stage, completed, total)
 
             target_count = 0
             try:
                 for stage, pairs in acquire_pair_stages(
-                    assets,
+                    visual_assets,
                     slider,
                     matching_progress,
                     self.scan_cancel.is_set,
+                    include_exact=False,
                 ):
                     target_count = self.database.replace_pairs(
                         pairs,
-                        preserve_exclusions=stage != "exact",
+                        preserve_exclusions=True,
                     )
                     self.database.set_matching_state(stage)
                     self._ui(self._matching_stage_saved, stage, target_count)
@@ -78,7 +89,8 @@ class FastDeduperApp(DeduperApp):
                     "Comparison stopped safely.\n\nAny completed matching stage remains saved.",
                 )
                 return (
-                    f"Matching stopped safely. {target_count} saved deletion candidates remain ready; "
+                    f"Matching stopped safely. {target_count} visual candidates and "
+                    f"{sha_target_count} SHA extras remain ready; "
                     "press SCAN to continue with a fresh comparison."
                 )
             except Exception:
@@ -90,10 +102,50 @@ class FastDeduperApp(DeduperApp):
                 raise
             return (
                 f"Scan complete. {new_count} new, {changed_count} changed, "
-                f"{missing_count} missing, {errors} errors, {target_count} deletion candidates."
+                f"{missing_count} missing, {errors} errors, {target_count} visual candidates, "
+                f"{sha_target_count} invisible SHA extras."
             )
 
         self._run("Starting parallel scan…", scan, self._refresh_pairs, lock_review=False)
+
+    def _begin_matching_progress(self, totals: dict[str, int], sha_targets: int) -> None:
+        self.matching_totals = totals
+        self.matching_completed = {stage: 0 for stage in totals}
+        self.sha_target_count = sha_targets
+        self._render_matching_progress()
+        self._refresh_counts()
+        self._refresh_pairs()
+
+    def _update_matching_progress(self, stage: str, completed: int, total: int) -> None:
+        if not hasattr(self, "matching_totals"):
+            return
+        self.matching_totals[stage] = total
+        self.matching_completed[stage] = completed
+        self._render_matching_progress()
+
+    def _render_matching_progress(self) -> None:
+        labels = {
+            "pHash": "pHash",
+            "PDQ": "PDQ",
+            "crop-resistant": "Crop",
+            "vPDQ": "vPDQ",
+        }
+        parts = []
+        completed_total = 0
+        work_total = 0
+        for stage in ("pHash", "PDQ", "crop-resistant", "vPDQ"):
+            total = self.matching_totals.get(stage, 0)
+            completed = min(self.matching_completed.get(stage, 0), total)
+            completed_total += completed
+            work_total += total
+            percent = 100 if total == 0 else round(completed * 100 / total)
+            parts.append(f"{labels[stage]} {completed:,}/{total:,} ({percent}%)")
+        overall = 100 if work_total == 0 else round(completed_total * 100 / work_total)
+        self.comparison_progress.set(
+            f"SHA extras {self.sha_target_count:,} (hidden)  •  "
+            + "  •  ".join(parts)
+            + f"  •  FULL CHECK {overall}%"
+        )
 
     def _matching_stage_saved(self, stage: str, target_count: int) -> None:
         labels = {
@@ -115,10 +167,20 @@ class FastDeduperApp(DeduperApp):
         self._refresh_counts()
         self._refresh_pairs()
 
+    def _nuke_finished(self) -> None:
+        counts = self.database.counts()
+        if hasattr(self, "sha_target_count"):
+            self.sha_target_count = counts["sha_queued"]
+            self._render_matching_progress()
+        self._refresh_pairs()
+
     def _close(self) -> None:
         self.scan_cancel.set()
         self.left_preview.stop()
         self.right_preview.stop()
+        for cancellation in self.preview_cancellations.values():
+            cancellation.set()
+        self.preview_executor.shutdown(wait=True, cancel_futures=True)
         # Wait for active workers to leave their current download/decode cleanly before
         # SQLite is closed. Completed hashes have already been committed individually.
         self.executor.shutdown(wait=True, cancel_futures=True)

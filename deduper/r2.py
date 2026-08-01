@@ -80,6 +80,29 @@ class R2Store:
             Config=TRANSFER_CONFIG,
         )
 
+    def read_bytes(
+        self,
+        key: str,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> bytes:
+        """Fetch one preview directly from R2 without creating a persistent cache."""
+        response = self.client.get_object(Bucket=self.config.bucket_name, Key=key)
+        body = response["Body"]
+        chunks: list[bytes] = []
+        try:
+            while True:
+                if cancelled is not None and cancelled():
+                    from .preview import PreviewCancelled
+
+                    raise PreviewCancelled()
+                chunk = body.read(1024 * 1024)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        finally:
+            body.close()
+        return b"".join(chunks)
+
     def delete_queued(
         self, queued: Iterable[tuple[str, int | None, int]]
     ) -> tuple[list[tuple[str, int | None, int, str]], list[str], str | None]:

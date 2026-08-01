@@ -84,6 +84,8 @@ def acquire_pair_stages(
     slider: int,
     progress: ProgressCallback | None = None,
     cancelled: CancelCallback | None = None,
+    *,
+    include_exact: bool = True,
 ) -> Iterator[tuple[str, list[PairResult]]]:
     """Yield safe, complete result sets after each matching stage.
 
@@ -93,9 +95,10 @@ def acquire_pair_stages(
     limits = thresholds(slider)
     candidates: dict[tuple[str, str], tuple[float, str]] = {}
     qualified_crop_pairs: set[tuple[str, str]] = set()
-    _exact_pairs(assets, candidates)
-    yield "exact", _select_and_orient(assets, candidates, qualified_crop_pairs, limits)
-    _check_cancelled(cancelled)
+    if include_exact:
+        _exact_pairs(assets, candidates)
+        yield "exact", _select_and_orient(assets, candidates, qualified_crop_pairs, limits)
+        _check_cancelled(cancelled)
 
     _phash_pairs(assets, limits, candidates, progress, cancelled)
     yield "phash", _select_and_orient(assets, candidates, qualified_crop_pairs, limits)
@@ -126,6 +129,38 @@ def acquire_pairs(assets: list[Asset], slider: int) -> list[PairResult]:
     for _, result in acquire_pair_stages(assets, slider):
         pass
     return result
+
+
+def partition_exact_duplicates(
+    assets: list[Asset],
+) -> tuple[list[Asset], list[tuple[str, str]]]:
+    """Remove complete SHA groups from review and choose one survivor per group.
+
+    All members of a repeated-SHA group are withheld from perceptual matching for
+    this scan. After NUKE removes the extras, the lone survivor naturally returns
+    to perceptual matching on the next scan.
+    """
+    groups: dict[str, list[Asset]] = defaultdict(list)
+    for asset in assets:
+        if asset.sha256:
+            groups[asset.sha256].append(asset)
+
+    withheld: set[str] = set()
+    deletions: list[tuple[str, str]] = []
+    for group in groups.values():
+        if len(group) < 2:
+            continue
+        survivor = max(group, key=_survivor_rank)
+        withheld.update(asset.key for asset in group)
+        deletions.extend(
+            (survivor.key, asset.key)
+            for asset in group
+            if asset.key != survivor.key
+        )
+
+    visual_assets = [asset for asset in assets if asset.key not in withheld]
+    deletions.sort()
+    return visual_assets, deletions
 
 
 def _select_and_orient(

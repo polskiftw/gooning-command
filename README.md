@@ -182,7 +182,7 @@ The Worker exposes only tag names and individual counts to the certificate-prote
 
 ## Windows GParty Deduper
 
-The deduper works directly against R2. It temporarily downloads one object at a time for hashing and previews, but it never keeps a second permanent copy of the media library.
+The deduper works directly against R2. It temporarily downloads one object at a time for hashing, and it fetches previews directly from R2 on demand as you navigate. Previews are not kept in an on-disk cache, so it never keeps a second permanent copy of the media library.
 
 It records these fingerprints in a local SQLite database:
 
@@ -215,25 +215,26 @@ INDEX_KEY=gallery-index.json
 ALLOW_DELETE=NO
 VIDEO_SAMPLE_SECONDS=1
 MAX_VIDEO_FRAMES=300
-PREVIEW_CACHE_MB=750
 ```
 
 Use an R2 token with object read/list access while testing. NUKE remains locked until the token has delete/write access and `ALLOW_DELETE=YES`.
 
-`config.txt`, the SQLite database, and preview cache are ignored by Git. The program stores them beside the EXE under `data/`.
+`config.txt` and the SQLite database are ignored by Git. The program stores the database beside the EXE under `data/`. Preview media is fetched on demand and is not retained there.
 
 ### Deduper workflow
 
 The app keeps the complete workflow on one screen:
 
 1. Set the 100-position slider. Left is looser; right is stricter.
-2. **SCAN** lists R2, hashes new or changed objects, finds duplicate groups, and queues every deletion candidate.
-3. Review the automatically selected survivor on the left and deletion candidate on the right.
+2. **SCAN** lists R2, hashes new or changed objects, finds duplicate groups, and queues every deletion candidate. The bottom progress line reports pHash, PDQ, crop, vPDQ, and overall completion separately.
+3. Review the automatically selected survivor on the left and deletion candidate on the right as perceptual stages finish. Navigation and exclusion remain available while later matching continues.
 4. Use **PREVIOUS** and **NEXT**, or the keyboard Left and Right arrow keys, to move through every pair.
 5. Press **EXCLUDE FROM THIS NUKE** to spare the current right-side candidate and immediately advance to the next pair.
-6. **NUKE** immediately deletes every non-excluded right-side candidate and removes its key from `gallery-index.json`.
+6. **NUKE SHA ONLY** immediately deletes only invisible byte-identical extras, leaving all perceptual targets untouched. **NUKE** deletes both invisible SHA extras and every non-excluded right-side perceptual candidate. Both remove confirmed deleted keys from `gallery-index.json`.
 
-Pairs are displayed from the least likely accepted match to the most likely match. There are no confirmation dialogs. Exclusions apply only to the current scan; pressing SCAN again makes every detected duplicate eligible again. Each right-side deletion candidate must directly match its left-side survivor. Connected match chains can therefore be split into multiple safe groups instead of treating an indirect chain member as a duplicate. Survivors are preferred by resolution, duration, perceptual-hash quality, and file size, in that order. If index cleanup fails after an object deletion, the app saves that cleanup locally and retries it the next time NUKE runs.
+Byte-identical SHA-256 groups never appear in the review carousel. The entire group is withheld from perceptual matching for that scan, one survivor is chosen automatically, and every extra copy enters an invisible NUKE queue. After NUKE, the one remaining copy returns to normal perceptual matching on the next SCAN.
+
+Perceptual pairs are displayed from the least likely accepted match to the most likely match. There are no confirmation dialogs. Exclusions apply only to the current scan; pressing SCAN again makes every detected perceptual duplicate eligible again. Each right-side deletion candidate must directly match its left-side survivor. Connected match chains can therefore be split into multiple safe groups instead of treating an indirect chain member as a duplicate. Survivors are preferred by resolution, duration, perceptual-hash quality, and file size, in that order. If index cleanup fails after an object deletion, the app saves that cleanup locally and retries it the next time NUKE runs.
 
 ## Local deduper development
 

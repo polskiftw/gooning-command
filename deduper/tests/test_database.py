@@ -127,6 +127,72 @@ class DatabaseTests(unittest.TestCase):
         self.database = Database(path)
         self.assertEqual(self.database.matching_state(), "exact")
 
+    def test_sha_deletions_are_queued_without_creating_preview_pairs(self) -> None:
+        survivor = asset("gallery/survivor.jpg", "f" * 64)
+        extra_a = asset("gallery/extra-a.jpg", "f" * 64)
+        extra_b = asset("gallery/extra-b.jpg", "f" * 64)
+        self.database.upsert_inventory([survivor, extra_a, extra_b])
+        for item in (survivor, extra_a, extra_b):
+            self.database.save_hashes(item)
+
+        count = self.database.replace_sha_deletions(
+            [(survivor.key, extra_a.key), (survivor.key, extra_b.key)]
+        )
+
+        self.assertEqual(count, 2)
+        self.assertEqual(self.database.scan_pairs(), [])
+        self.assertEqual(
+            {key for key, _pair_id, _size in self.database.queued_deletions()},
+            {extra_a.key, extra_b.key},
+        )
+        self.assertEqual(
+            {key for key, _pair_id, _size in self.database.queued_sha_deletions()},
+            {extra_a.key, extra_b.key},
+        )
+        counts = self.database.counts()
+        self.assertEqual((counts["pending"], counts["sha_queued"], counts["queued"]), (0, 2, 2))
+
+    def test_sha_deletion_log_names_the_invisible_survivor(self) -> None:
+        survivor = asset("gallery/survivor.jpg", "f" * 64)
+        extra = asset("gallery/extra.jpg", "f" * 64)
+        self.database.upsert_inventory([survivor, extra])
+        self.database.replace_sha_deletions([(survivor.key, extra.key)])
+
+        self.database.record_deletions([(extra.key, None, extra.size, "deleted")])
+
+        row = self.database.connection.execute(
+            "SELECT survivor_key FROM deletion_log WHERE deleted_key = ?", (extra.key,)
+        ).fetchone()
+        self.assertEqual(row["survivor_key"], survivor.key)
+        self.assertEqual(self.database.queued_deletions(), [])
+        self.assertEqual(self.database.queued_sha_deletions(), [])
+
+    def test_new_sha_scan_replaces_old_invisible_queue(self) -> None:
+        items = [asset(f"gallery/{name}.jpg") for name in ("a", "b", "c")]
+        self.database.upsert_inventory(items)
+        self.database.replace_sha_deletions([(items[0].key, items[1].key)])
+        self.database.replace_sha_deletions([(items[0].key, items[2].key)])
+
+        self.assertEqual(
+            [key for key, _pair_id, _size in self.database.queued_deletions()],
+            [items[2].key],
+        )
+
+    def test_sha_only_queue_does_not_include_visual_targets(self) -> None:
+        items = [asset(f"gallery/{name}.jpg") for name in ("survivor", "exact", "visual")]
+        self.database.upsert_inventory(items)
+        self.database.replace_sha_deletions([(items[0].key, items[1].key)])
+        self.database.replace_pairs([(items[0].key, items[2].key, 91.0, "visual")])
+
+        self.assertEqual(
+            [key for key, _pair_id, _size in self.database.queued_sha_deletions()],
+            [items[1].key],
+        )
+        self.assertEqual(
+            {key for key, _pair_id, _size in self.database.queued_deletions()},
+            {items[1].key, items[2].key},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

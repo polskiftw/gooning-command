@@ -3,6 +3,7 @@ from __future__ import annotations
 import queue
 import shutil
 import tempfile
+import threading
 import tkinter as tk
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -14,7 +15,12 @@ from .database import Database
 from .hashing import hash_file
 from .matcher import acquire_pairs
 from .models import Pair
-from .preview import MediaPreview, PreviewCache
+from .preview import (
+    MediaPreview,
+    PreparedPreview,
+    PreviewCancelled,
+    prepare_preview,
+)
 from .r2 import R2Store
 
 
@@ -42,17 +48,19 @@ class DeduperApp(tk.Tk):
         self.database = database
         self.store = store
         self.data_directory = data_directory
+        # Preview media is now fetched directly from R2. Remove the obsolete,
+        # disposable cache left by older portable builds instead of stranding it
+        # beside the database forever.
+        shutil.rmtree(data_directory / "preview-cache", ignore_errors=True)
         self.events: queue.Queue[tuple[Callable, tuple]] = queue.Queue()
         self.executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="gparty")
-        self.cache = PreviewCache(
-            data_directory / "preview-cache",
-            config.preview_cache_mb * 1024 * 1024,
-        )
+        self.preview_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="gparty-preview")
         self.pairs: list[Pair] = []
         self.pair_index = 0
         self.busy = False
         self.review_locked = False
         self.preview_requests: dict[MediaPreview, int] = {}
+        self.preview_cancellations: dict[MediaPreview, threading.Event] = {}
         state = self.database.matching_state()
         if state == "complete":
             self.empty_pair_message = "No duplicates found.\n\nThe last comparison completed successfully."
@@ -107,6 +115,13 @@ class DeduperApp(tk.Tk):
         self.scan_button.pack(side="left", padx=(0, 8))
         self.nuke_button = ttk.Button(actions, text="NUKE", style="Danger.TButton", command=self.start_nuke)
         self.nuke_button.pack(side="left")
+        self.sha_nuke_button = ttk.Button(
+            actions,
+            text="NUKE SHA ONLY",
+            style="Danger.TButton",
+            command=self.start_sha_nuke,
+        )
+        self.sha_nuke_button.pack(side="left", padx=(8, 0))
         tk.Label(
             actions,
             text="Loose",
@@ -191,6 +206,17 @@ class DeduperApp(tk.Tk):
         self.next_button = ttk.Button(navigation, text="NEXT ▶", command=self._next)
         self.next_button.pack(side="right")
 
+        self.comparison_progress = tk.StringVar(value="Comparison progress: idle")
+        tk.Label(
+            self,
+            textvariable=self.comparison_progress,
+            background="#171717",
+            foreground=MUTED,
+            anchor="w",
+            padx=12,
+            pady=5,
+        ).pack(fill="x")
+
         self.status = tk.StringVar(value="Ready.")
         status = tk.Label(
             self,
@@ -219,7 +245,7 @@ class DeduperApp(tk.Tk):
         self.busy = busy
         self.review_locked = busy and lock_review
         state = "disabled" if busy else "normal"
-        for button in (self.scan_button, self.nuke_button):
+        for button in (self.scan_button, self.nuke_button, self.sha_nuke_button):
             button.configure(state=state)
         self._set_review_state(bool(self.pairs))
 
@@ -300,14 +326,25 @@ class DeduperApp(tk.Tk):
         self._run("Starting scan…", scan, self._refresh_pairs, lock_review=False)
 
     def start_nuke(self) -> None:
-        queued = self.database.queued_deletions()
+        self._start_nuke(sha_only=False)
+
+    def start_sha_nuke(self) -> None:
+        self._start_nuke(sha_only=True)
+
+    def _start_nuke(self, *, sha_only: bool) -> None:
+        queued = (
+            self.database.queued_sha_deletions()
+            if sha_only
+            else self.database.queued_deletions()
+        )
         cleanup = self.database.pending_index_cleanup()
+        action = "NUKE SHA ONLY" if sha_only else "NUKE"
         if not queued and not cleanup:
-            self.status.set("NUKE has nothing queued.")
+            self.status.set(f"{action} has nothing queued.")
             return
         if not self.config.allow_delete:
             self.status.set(
-                "NUKE is locked. Set ALLOW_DELETE=YES in config.txt, then restart the app."
+                f"{action} is locked. Set ALLOW_DELETE=YES in config.txt, then restart the app."
             )
             return
 
@@ -326,7 +363,8 @@ class DeduperApp(tk.Tk):
             failed = len(results) - len(deleted)
             reclaimed = sum(size for key, _, size in queued if key in set(deleted))
             message = (
-                f"NUKE complete. Deleted {len(deleted)} objects, reclaimed {human_bytes(reclaimed)}, "
+                f"{action} complete. Deleted {len(deleted)} objects, "
+                f"reclaimed {human_bytes(reclaimed)}, "
                 f"{failed} failed."
             )
             if index_error:
@@ -335,7 +373,14 @@ class DeduperApp(tk.Tk):
                 message += f" Earlier gallery index cleanup still needs retrying: {cleanup_error}"
             return message
 
-        self._run(f"NUKE deleting {len(queued)} queued objects…", nuke, self._refresh_pairs)
+        self._run(
+            f"{action} deleting {len(queued)} queued objects…",
+            nuke,
+            self._nuke_finished,
+        )
+
+    def _nuke_finished(self) -> None:
+        self._refresh_pairs()
 
     def _refresh_counts(self) -> None:
         counts = self.database.counts()
@@ -343,7 +388,8 @@ class DeduperApp(tk.Tk):
         self.counts_label.configure(
             text=(
                 f"R2: {counts['live']}  •  Hashed: {counts['hashed']}  •  "
-                f"Targets: {counts['pending']}  •  Queued: {counts['queued']}{lock}"
+                f"Review: {counts['pending']}  •  SHA extras: {counts['sha_queued']}  •  "
+                f"NUKE total: {counts['queued']}{lock}"
             )
         )
 
@@ -397,31 +443,45 @@ class DeduperApp(tk.Tk):
 
     def _load_preview(self, key: str, widget: MediaPreview) -> None:
         widget.clear()
+        previous = self.preview_cancellations.get(widget)
+        if previous is not None:
+            previous.set()
+        cancellation = threading.Event()
+        self.preview_cancellations[widget] = cancellation
         request = self.preview_requests.get(widget, 0) + 1
         self.preview_requests[widget] = request
 
         def fetch() -> None:
             try:
-                path = self.cache.obtain(key, self.store.download)
-                self._ui(self._finish_preview, widget, request, path, None)
+                if cancellation.is_set():
+                    return
+                data = self.store.read_bytes(key, cancellation.is_set)
+                if cancellation.is_set():
+                    return
+                extension = key.rsplit(".", 1)[-1] if "." in key else ""
+                preview = prepare_preview(data, extension, cancellation.is_set)
+                if not cancellation.is_set():
+                    self._ui(self._finish_preview, widget, request, preview, None)
+            except PreviewCancelled:
+                return
             except Exception as exc:
                 self._ui(self._finish_preview, widget, request, None, type(exc).__name__)
 
-        self.executor.submit(fetch)
+        self.preview_executor.submit(fetch)
 
     def _finish_preview(
         self,
         widget: MediaPreview,
         request: int,
-        path: Path | None,
+        preview: PreparedPreview | None,
         error: str | None,
     ) -> None:
         if self.preview_requests.get(widget) != request:
             return
-        if error or path is None:
+        if error or preview is None:
             widget.clear(f"Preview failed\n{error or 'unknown error'}")
         else:
-            widget.load(path)
+            widget.load_prepared(preview)
 
     def _set_review_state(self, enabled: bool) -> None:
         state = "normal" if enabled and not self.review_locked else "disabled"
@@ -468,6 +528,9 @@ class DeduperApp(tk.Tk):
     def _close(self) -> None:
         self.left_preview.stop()
         self.right_preview.stop()
+        for cancellation in self.preview_cancellations.values():
+            cancellation.set()
+        self.preview_executor.shutdown(wait=False, cancel_futures=True)
         self.executor.shutdown(wait=False, cancel_futures=True)
         self.database.close()
         self.destroy()

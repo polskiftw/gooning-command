@@ -21,7 +21,6 @@ class Config:
     allow_delete: bool = False
     video_sample_seconds: float = 1.0
     max_video_frames: int = 120
-    preview_cache_mb: int = 750
     scan_workers: int = 10
     video_workers: int = 3
 
@@ -67,12 +66,11 @@ def parse_config(path: Path) -> Config:
     try:
         video_sample_seconds = float(values.get("VIDEO_SAMPLE_SECONDS", "1"))
         max_video_frames = int(values.get("MAX_VIDEO_FRAMES", "120"))
-        preview_cache_mb = int(values.get("PREVIEW_CACHE_MB", "750"))
         scan_workers = int(values.get("SCAN_WORKERS", "10"))
         video_workers = int(values.get("VIDEO_WORKERS", "3"))
     except ValueError as exc:
         raise ConfigError(
-            "VIDEO_SAMPLE_SECONDS, MAX_VIDEO_FRAMES, PREVIEW_CACHE_MB, SCAN_WORKERS, and VIDEO_WORKERS must be numbers"
+            "VIDEO_SAMPLE_SECONDS, MAX_VIDEO_FRAMES, SCAN_WORKERS, and VIDEO_WORKERS must be numbers"
         ) from exc
 
     # 300 was the old shipped default. Treat that untouched legacy value as 120
@@ -80,10 +78,9 @@ def parse_config(path: Path) -> Config:
     if max_video_frames == 300:
         max_video_frames = 120
 
-    if video_sample_seconds <= 0 or max_video_frames < 1 or preview_cache_mb < 100:
+    if video_sample_seconds <= 0 or max_video_frames < 1:
         raise ConfigError(
-            "VIDEO_SAMPLE_SECONDS must be above 0, MAX_VIDEO_FRAMES at least 1, "
-            "and PREVIEW_CACHE_MB at least 100"
+            "VIDEO_SAMPLE_SECONDS must be above 0 and MAX_VIDEO_FRAMES at least 1"
         )
     if not 1 <= scan_workers <= 32:
         raise ConfigError("SCAN_WORKERS must be between 1 and 32")
@@ -100,7 +97,6 @@ def parse_config(path: Path) -> Config:
         allow_delete=values.get("ALLOW_DELETE", "NO").upper() == "YES",
         video_sample_seconds=video_sample_seconds,
         max_video_frames=max_video_frames,
-        preview_cache_mb=preview_cache_mb,
         scan_workers=scan_workers,
         video_workers=video_workers,
     )

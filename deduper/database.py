@@ -52,6 +52,12 @@ CREATE TABLE IF NOT EXISTS deletion_queue (
     queued_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS sha_deletion_queue (
+    key TEXT PRIMARY KEY REFERENCES assets(key),
+    survivor_key TEXT NOT NULL REFERENCES assets(key),
+    queued_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS deletion_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     deleted_key TEXT NOT NULL,
@@ -150,6 +156,10 @@ class Database:
                             asset.key,
                         ),
                     )
+                    self.connection.execute(
+                        "DELETE FROM sha_deletion_queue WHERE key = ? OR survivor_key = ?",
+                        (asset.key, asset.key),
+                    )
                     changed_count += 1
                 else:
                     self.connection.execute("UPDATE assets SET deleted = 0 WHERE key = ?", (asset.key,))
@@ -161,6 +171,10 @@ class Database:
             missing = [row["key"] for row in rows if row["key"] not in live_keys]
             self.connection.executemany("UPDATE assets SET deleted = 1 WHERE key = ?", ((key,) for key in missing))
             self.connection.executemany("DELETE FROM deletion_queue WHERE key = ?", ((key,) for key in missing))
+            self.connection.executemany(
+                "DELETE FROM sha_deletion_queue WHERE key = ? OR survivor_key = ?",
+                ((key, key) for key in missing),
+            )
         return len(missing)
 
     def assets_needing_hashes(self) -> Iterator[Asset]:
@@ -231,17 +245,10 @@ class Database:
                         "SELECT left_key, right_key FROM pairs WHERE status = 'excluded'"
                     ).fetchall()
                 }
-            self.connection.execute("DELETE FROM deletion_queue")
-            self.connection.execute("DELETE FROM pairs")
+            rows = []
             for (left, right), (similarity, reason) in normalized.items():
                 is_excluded = (left, right) in excluded
-                cursor = self.connection.execute(
-                    """
-                    INSERT INTO pairs
-                        (left_key, right_key, similarity, reason, status, decision, reviewed_at)
-                    VALUES (?, ?, ?, ?, ?, ?,
-                        CASE WHEN ? = 'excluded' THEN CURRENT_TIMESTAMP ELSE NULL END)
-                    """,
+                rows.append(
                     (
                         left,
                         right,
@@ -250,13 +257,51 @@ class Database:
                         "excluded" if is_excluded else "included",
                         "exclude" if is_excluded else None,
                         "excluded" if is_excluded else "included",
-                    ),
-                )
-                if not is_excluded:
-                    self.connection.execute(
-                        "INSERT OR IGNORE INTO deletion_queue (key, pair_id) VALUES (?, ?)",
-                        (right, cursor.lastrowid),
                     )
+                )
+
+            # Thousands of execute() calls held the shared database lock long enough
+            # to make navigation look frozen. Bulk insertion keeps the checkpoint
+            # transaction short while preserving its all-or-nothing behavior.
+            self.connection.execute("DELETE FROM deletion_queue")
+            self.connection.execute("DELETE FROM pairs")
+            self.connection.executemany(
+                """
+                INSERT INTO pairs
+                    (left_key, right_key, similarity, reason, status, decision, reviewed_at)
+                VALUES (?, ?, ?, ?, ?, ?,
+                    CASE WHEN ? = 'excluded' THEN CURRENT_TIMESTAMP ELSE NULL END)
+                """,
+                rows,
+            )
+            self.connection.execute(
+                """
+                INSERT OR IGNORE INTO deletion_queue (key, pair_id)
+                SELECT right_key, id FROM pairs WHERE status = 'included'
+                """
+            )
+        return len(normalized)
+
+    def replace_sha_deletions(self, deletions: Iterable[tuple[str, str]]) -> int:
+        """Replace the invisible exact-SHA queue for the current scan.
+
+        Each tuple is (survivor_key, deletion_key). Exact duplicates never enter
+        the review-pair table, but NUKE still receives every redundant object.
+        """
+        normalized = {
+            deletion_key: survivor_key
+            for survivor_key, deletion_key in deletions
+            if survivor_key != deletion_key
+        }
+        with self._lock, self.connection:
+            self.connection.execute("DELETE FROM sha_deletion_queue")
+            self.connection.executemany(
+                """
+                INSERT INTO sha_deletion_queue (key, survivor_key)
+                VALUES (?, ?)
+                """,
+                ((key, survivor) for key, survivor in normalized.items()),
+            )
         return len(normalized)
 
     def set_matching_state(self, state: str) -> None:
@@ -326,8 +371,26 @@ class Database:
         with self._lock:
             rows = self.connection.execute(
                 """
-                SELECT q.key, q.pair_id, a.size
+                SELECT q.key, q.pair_id, a.size, q.queued_at
                 FROM deletion_queue q JOIN assets a ON a.key = q.key
+                WHERE a.deleted = 0
+                  AND NOT EXISTS (SELECT 1 FROM sha_deletion_queue s WHERE s.key = q.key)
+                UNION ALL
+                SELECT q.key, NULL AS pair_id, a.size, q.queued_at
+                FROM sha_deletion_queue q JOIN assets a ON a.key = q.key
+                WHERE a.deleted = 0
+                ORDER BY 4, 1
+                """
+            ).fetchall()
+        return [(row["key"], row["pair_id"], row["size"]) for row in rows]
+
+    def queued_sha_deletions(self) -> list[tuple[str, int | None, int]]:
+        """Return only invisible exact-SHA extras for the dedicated mini NUKE."""
+        with self._lock:
+            rows = self.connection.execute(
+                """
+                SELECT q.key, NULL AS pair_id, a.size
+                FROM sha_deletion_queue q JOIN assets a ON a.key = q.key
                 WHERE a.deleted = 0
                 ORDER BY q.queued_at, q.key
                 """
@@ -344,6 +407,12 @@ class Database:
                     ).fetchone()
                     if row:
                         survivor = row["right_key"] if row["left_key"] == key else row["left_key"]
+                else:
+                    row = self.connection.execute(
+                        "SELECT survivor_key FROM sha_deletion_queue WHERE key = ?", (key,)
+                    ).fetchone()
+                    if row:
+                        survivor = row["survivor_key"]
                 self.connection.execute(
                     """
                     INSERT INTO deletion_log
@@ -355,6 +424,7 @@ class Database:
                 if result == "deleted":
                     self.connection.execute("UPDATE assets SET deleted = 1 WHERE key = ?", (key,))
                     self.connection.execute("DELETE FROM deletion_queue WHERE key = ?", (key,))
+                    self.connection.execute("DELETE FROM sha_deletion_queue WHERE key = ?", (key,))
 
     def queue_index_cleanup(self, keys: Iterable[str]) -> None:
         with self._lock, self.connection:
@@ -395,14 +465,29 @@ class Database:
                 WHERE left_asset.deleted = 0 AND right_asset.deleted = 0
                 """
             ).fetchone()[0]
-            queued = self.connection.execute("SELECT COUNT(*) FROM deletion_queue").fetchone()[0]
+            queued = self.connection.execute(
+                """
+                SELECT COUNT(*) FROM deletion_queue q
+                JOIN assets a ON a.key = q.key
+                WHERE a.deleted = 0
+                  AND NOT EXISTS (SELECT 1 FROM sha_deletion_queue s WHERE s.key = q.key)
+                """
+            ).fetchone()[0]
+            sha_queued = self.connection.execute(
+                """
+                SELECT COUNT(*) FROM sha_deletion_queue q
+                JOIN assets a ON a.key = q.key
+                WHERE a.deleted = 0
+                """
+            ).fetchone()[0]
         return {
             "total": int(row["total"] or 0),
             "live": int(row["live"] or 0),
             "hashed": int(row["hashed"] or 0),
             "errors": int(row["errors"] or 0),
             "pending": int(pairs),
-            "queued": int(queued),
+            "sha_queued": int(sha_queued),
+            "queued": int(queued) + int(sha_queued),
         }
 
     def asset(self, key: str) -> Asset | None:

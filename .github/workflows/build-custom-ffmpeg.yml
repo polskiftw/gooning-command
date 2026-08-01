@@ -1,5 +1,5 @@
-name: Build Custom FFmpeg 11
-run-name: Build Custom FFmpeg 11
+name: Build Custom FFmpeg 12
+run-name: Build Custom FFmpeg 12
 
 on:
   workflow_dispatch:
@@ -25,6 +25,10 @@ jobs:
       - name: Replace REST tag lookup with Git
         shell: pwsh
         run: '& "${{ github.workspace }}\.github\ffmpeg-build\patch-stable-tag-resolver.ps1"'
+
+      - name: Handle successful MABS build with stale exit code
+        shell: pwsh
+        run: '& "${{ github.workspace }}\.github\ffmpeg-build\patch-mabs-exit-code.ps1"'
 
       - name: Validate PowerShell build scripts
         shell: pwsh

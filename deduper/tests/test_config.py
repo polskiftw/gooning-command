@@ -28,7 +28,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.gallery_prefix, "gallery/")
         self.assertEqual(config.secret_access_key, "secret=with=equals")
         self.assertTrue(config.allow_delete)
-        self.assertEqual(config.compare_workers, 16)
+        self.assertEqual(config.compare_workers, 20)
 
     def test_parses_compare_workers(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

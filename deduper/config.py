@@ -23,7 +23,7 @@ class Config:
     max_video_frames: int = 120
     scan_workers: int = 10
     video_workers: int = 3
-    compare_workers: int = 16
+    compare_workers: int = 20
 
     @property
     def endpoint_url(self) -> str:
@@ -69,7 +69,7 @@ def parse_config(path: Path) -> Config:
         max_video_frames = int(values.get("MAX_VIDEO_FRAMES", "120"))
         scan_workers = int(values.get("SCAN_WORKERS", "10"))
         video_workers = int(values.get("VIDEO_WORKERS", "3"))
-        compare_workers = int(values.get("COMPARE_WORKERS", "16"))
+        compare_workers = int(values.get("COMPARE_WORKERS", "20"))
     except ValueError as exc:
         raise ConfigError(
             "VIDEO_SAMPLE_SECONDS, MAX_VIDEO_FRAMES, SCAN_WORKERS, VIDEO_WORKERS, "

@@ -7,3 +7,8 @@ deduper/data/
 deduper/build/
 deduper/dist/
 deduper/*.spec.bak
+tagtime/config.txt
+tagtime/data/
+tagtime/build/
+tagtime/dist/
+tagtime/*.spec.bak

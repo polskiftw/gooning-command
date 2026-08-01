@@ -1,6 +1,6 @@
 # GParty
 
-GParty is a self-contained media collector, Cloudflare R2 library, random browser viewer, and Windows duplicate-review tool.
+GParty is a self-contained media collector, Cloudflare R2 library, tag-aware random browser viewer, local AI tagger, and Windows duplicate-review tool.
 
 The browser viewer validates random-item API responses and automatically retries transient, timed-out, empty, or malformed responses without replacing the currently displayed media.
 
@@ -17,10 +17,12 @@ GitHub Actions: Yoink
       +--> _internal/gallery-dl-archive-v0.2.1.sqlite3
                  |
                  v
-          Cloudflare R2
-            /        \
-           v          v
- Worker random viewer  Windows GParty Deduper
+                     Cloudflare R2
+                 /         |         \
+                v          v          v
+      Worker random viewer  Tag Time  GParty Deduper
+                ^              |
+                +-- private tag index
 ```
 
 The shared storage contract is:
@@ -30,6 +32,7 @@ The shared storage contract is:
 | Media prefix | `gallery/` |
 | Gallery index | `gallery-index.json` |
 | Private viewer-managed source list | `_internal/reddit-sources.json` |
+| Private Tag Time index | `_internal/tag-index-v1.json` |
 | Worker R2 binding | `MEDIA_BUCKET` |
 | Bucket selector | `R2_BUCKET_NAME` |
 
@@ -47,11 +50,13 @@ The shared storage contract is:
 | `worker/repair_index.py` | Adds unindexed R2 media to the gallery index |
 | `worker/audit_index.py` | Read-only aggregate integrity audit for the live index and bucket |
 | `deduper/` | Windows R2 scanner, matcher, review interface, and tests |
+| `tagtime/` | Resumable Windows JoyTag app, local SQLite state, and tag-index publisher |
 | `.github/workflows/yoink.yml` | Scheduled and manual collector |
 | `.github/workflows/flush.yml` | Manual index repair |
 | `.github/workflows/audit-index.yml` | Manual read-only R2 index audit |
 | `.github/workflows/update-cf-web.yml` | Manual Worker deployment |
 | `.github/workflows/build-deduper.yml` | Tested Windows ZIP build and rolling release |
+| `.github/workflows/build-tag-time.yml` | Tested Tag Time Windows ZIP build and rolling release |
 | `requirements.txt` | Collector and repair dependencies |
 
 ## Collector requirements
@@ -146,9 +151,9 @@ Run **Actions → Flush → Run workflow** after an interrupted upload may have 
 
 Run **Actions → Audit Index → Run workflow** to compare the live index with R2 without modifying either one. It reports aggregate counts for duplicate keys, malformed metadata, incorrect random weighting, missing objects, and unindexed objects. It never prints media filenames or credentials, and the run turns red when it finds an integrity problem.
 
-Run **Actions → update-cf-web 2 → Run workflow** to publish Worker source changes. Repository commits do not automatically deploy the live Worker.
+Run **Actions → update-cf-web 3 → Run workflow** to publish Worker source changes. Repository commits do not automatically deploy the live Worker.
 
-Workflow display names end with a revision number. Increment that number whenever the corresponding workflow file changes. `update-cf-web 2` explicitly checks out current `main`, records the exact deployed commit in the run summary, and refuses to deploy the obsolete CSRF-cookie source form. Start a new revision-2 run after this cleanup. Historical deployment revisions must not be rerun.
+Workflow display names end with a revision number. Increment that number whenever the corresponding workflow file changes. `update-cf-web 3` explicitly checks out current `main`, records the exact deployed commit in the run summary, and verifies both the protected source manager and Tag Time contract before deploying. Historical deployment revisions must not be rerun.
 
 ## Private viewer source manager
 
@@ -157,6 +162,23 @@ The certificate-protected viewer has a transparent gray `+` centered between the
 The browser submits `POST /api/sources` as a same-origin background JSON request. The endpoint requires a successfully verified, non-revoked mTLS client certificate, the application-only `x-gparty-source-request` header, JSON content, and exactly one small `subreddit` field. Cross-site HTML forms cannot create that request, and cross-origin scripts cannot pass the browser's CORS preflight. The endpoint validates and normalizes the name, rejects malformed input, ignores case-insensitive duplicates, and uses an ETag-protected R2 write so simultaneous additions cannot silently overwrite each other. It returns a compact JSON result to the existing dialog without navigating away from the viewer. The private source object is outside `gallery/`, is absent from `gallery-index.json`, and cannot be served by the media route. Yoink reads it on the next scheduled or manual run.
 
 Worker deployments set both `workers_dev = false` and `preview_urls = false`, preventing alternate public Worker URLs from bypassing the custom hostname's certificate protection.
+
+## GParty Tag Time
+
+Tag Time locally classifies the R2 library with [JoyTag](https://github.com/fpgaminer/joytag), a multi-label Danbooru-style model designed for illustrated and photographic media. The Windows app uses DirectML for the RTX GPU without requiring a separate CUDA toolkit. It samples still images plus representative GIF and video frames.
+
+Download [the latest Tag Time Windows ZIP](https://github.com/polskiftw/gparty/releases/download/tag-time-windows-latest/GParty-Tag-Time-Windows.zip), extract it, copy `config.example.txt` to `config.txt`, and paste the same four R2 values used by the deduper:
+
+```text
+R2_ACCOUNT_ID=
+R2_ACCESS_KEY_ID=
+R2_SECRET_ACCESS_KEY=
+R2_BUCKET_NAME=
+```
+
+No Cloudflare dashboard changes or separate credentials are required. The R2 token needs object list/read/write access. Press **TAG TIME**. The first run downloads the official JoyTag model once. The app stores completed work in `data/tag-time.sqlite3`, retries only failed/new/changed assets, and uploads `_internal/tag-index-v1.json` every 100 completed files and at a clean stop.
+
+The Worker exposes only tag names and individual counts to the certificate-protected viewer. Desktop renders the tag catalog in a left sidebar. Checked tags use AND matching; all unchecked means the original fully random behavior. Mobile omits the sidebar entirely. The private item-to-tag mapping cannot be reached through `/media/`.
 
 ## Windows GParty Deduper
 

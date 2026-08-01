@@ -83,6 +83,13 @@ class DatabaseTests(unittest.TestCase):
 
         self.assertEqual([pair.similarity for pair in self.database.scan_pairs()], [71.0, 99.0])
 
+    def test_matching_state_survives_database_reopen(self) -> None:
+        self.database.set_matching_state("exact")
+        path = self.database.path
+        self.database.close()
+        self.database = Database(path)
+        self.assertEqual(self.database.matching_state(), "exact")
+
 
 if __name__ == "__main__":
     unittest.main()

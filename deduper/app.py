@@ -52,6 +52,15 @@ class DeduperApp(tk.Tk):
         self.pair_index = 0
         self.busy = False
         self.preview_requests: dict[MediaPreview, int] = {}
+        state = self.database.matching_state()
+        if state == "complete":
+            self.empty_pair_message = "No duplicates found.\n\nThe last comparison completed successfully."
+        elif state in {"running", "exact", "phash", "pdq", "images", "failed", "cancelled"}:
+            self.empty_pair_message = (
+                "Comparison did not finish.\n\nSaved results are safe; press SCAN to try again."
+            )
+        else:
+            self.empty_pair_message = "Not compared yet.\n\nPress SCAN to find duplicate pairs."
 
         self.title("GParty Deduper")
         self.geometry("1320x880")
@@ -334,9 +343,14 @@ class DeduperApp(tk.Tk):
         self.pair_index = min(self.pair_index, max(0, len(self.pairs) - 1))
         self._show_current_pair()
 
+    def _set_empty_pair_message(self, message: str) -> None:
+        self.empty_pair_message = message
+        if not self.pairs:
+            self.pair_label.configure(text=message)
+
     def _show_current_pair(self) -> None:
         if not self.pairs:
-            self.pair_label.configure(text="No duplicate pairs.\n\nAdjust the slider and press SCAN.")
+            self.pair_label.configure(text=self.empty_pair_message)
             self.left_meta.configure(text="")
             self.right_meta.configure(text="")
             self.left_preview.clear("No target")

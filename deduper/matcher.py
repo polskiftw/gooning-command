@@ -1,11 +1,22 @@
 from __future__ import annotations
 
 import json
+import math
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from typing import Callable, Iterator
 
 from .models import Asset
+
+
+PairResult = tuple[str, str, float, str]
+ProgressCallback = Callable[[str, int, int], None]
+CancelCallback = Callable[[], bool]
+
+
+class MatchingCancelled(Exception):
+    """Raised after the latest completed matching stage has already been saved."""
 
 
 def hamming_hex(left: str, right: str) -> int:
@@ -68,13 +79,61 @@ def thresholds(slider: int) -> dict[str, float | int]:
     }
 
 
-def acquire_pairs(assets: list[Asset], slider: int) -> list[tuple[str, str, float, str]]:
+def acquire_pair_stages(
+    assets: list[Asset],
+    slider: int,
+    progress: ProgressCallback | None = None,
+    cancelled: CancelCallback | None = None,
+) -> Iterator[tuple[str, list[PairResult]]]:
+    """Yield safe, complete result sets after each matching stage.
+
+    Callers can persist every yielded set. If a later perceptual stage is slow,
+    cancelled, or fails, exact (and then image) matches are not lost with it.
+    """
     limits = thresholds(slider)
     candidates: dict[tuple[str, str], tuple[float, str]] = {}
     qualified_crop_pairs: set[tuple[str, str]] = set()
     _exact_pairs(assets, candidates)
-    _image_pairs(assets, limits, candidates, qualified_crop_pairs)
-    _video_pairs(assets, limits, candidates)
+    yield "exact", _select_and_orient(assets, candidates, qualified_crop_pairs, limits)
+    _check_cancelled(cancelled)
+
+    _phash_pairs(assets, limits, candidates, progress, cancelled)
+    yield "phash", _select_and_orient(assets, candidates, qualified_crop_pairs, limits)
+    _check_cancelled(cancelled)
+
+    _pdq_pairs(assets, limits, candidates, progress, cancelled)
+    yield "pdq", _select_and_orient(assets, candidates, qualified_crop_pairs, limits)
+    _check_cancelled(cancelled)
+
+    _crop_pairs(
+        assets,
+        limits,
+        candidates,
+        qualified_crop_pairs,
+        progress,
+        cancelled,
+    )
+    yield "images", _select_and_orient(assets, candidates, qualified_crop_pairs, limits)
+    _check_cancelled(cancelled)
+
+    _video_pairs(assets, limits, candidates, progress, cancelled)
+    yield "complete", _select_and_orient(assets, candidates, qualified_crop_pairs, limits)
+
+
+def acquire_pairs(assets: list[Asset], slider: int) -> list[PairResult]:
+    """Return the final result set; retained for tests and non-UI callers."""
+    result: list[PairResult] = []
+    for _, result in acquire_pair_stages(assets, slider):
+        pass
+    return result
+
+
+def _select_and_orient(
+    assets: list[Asset],
+    candidates: dict[tuple[str, str], tuple[float, str]],
+    qualified_crop_pairs: set[tuple[str, str]],
+    limits: dict[str, float | int],
+) -> list[PairResult]:
     minimum = float(limits["minimum_similarity"])
     selected = {
         keys: details
@@ -82,6 +141,21 @@ def acquire_pairs(assets: list[Asset], slider: int) -> list[tuple[str, str, floa
         if details[0] >= minimum or keys in qualified_crop_pairs
     }
     return _orient_duplicate_groups(assets, selected)
+
+
+def _check_cancelled(cancelled: CancelCallback | None) -> None:
+    if cancelled is not None and cancelled():
+        raise MatchingCancelled()
+
+
+def _report(
+    progress: ProgressCallback | None,
+    stage: str,
+    completed: int,
+    total: int,
+) -> None:
+    if progress is not None and (completed == total or completed % 250 == 0):
+        progress(stage, completed, total)
 
 
 def _orient_duplicate_groups(
@@ -183,16 +257,19 @@ def _exact_pairs(
                 _record(candidates, left, right, 100, "exact SHA-256 match")
 
 
-def _image_pairs(
+def _phash_pairs(
     assets: list[Asset],
     limits: dict[str, float | int],
     candidates: dict[tuple[str, str], tuple[float, str]],
-    qualified_crop_pairs: set[tuple[str, str]],
+    progress: ProgressCallback | None = None,
+    cancelled: CancelCallback | None = None,
 ) -> None:
     tree = BKTree()
     radius = int(limits["phash"])
-    for asset in assets:
+    for index, asset in enumerate(assets, 1):
+        _check_cancelled(cancelled)
         if not asset.phash or asset.vpdq_hashes:
+            _report(progress, "pHash", index, len(assets))
             continue
         for distance, other in tree.search(asset.phash, radius):
             phash_score = 100 * (1 - distance / 64)
@@ -208,18 +285,28 @@ def _image_pairs(
             )
             _record(candidates, asset, other, score, reason)
         tree.add(asset.phash, asset)
+        _report(progress, "pHash", index, len(assets))
 
+
+def _pdq_pairs(
+    assets: list[Asset],
+    limits: dict[str, float | int],
+    candidates: dict[tuple[str, str], tuple[float, str]],
+    progress: ProgressCallback | None = None,
+    cancelled: CancelCallback | None = None,
+) -> None:
     pdq_tree = BKTree()
     pdq_radius = int(limits["pdq"])
-    for asset in assets:
+    for index, asset in enumerate(assets, 1):
+        _check_cancelled(cancelled)
         if not asset.pdq_hash or asset.vpdq_hashes:
+            _report(progress, "PDQ", index, len(assets))
             continue
         for distance, other in pdq_tree.search(asset.pdq_hash, pdq_radius):
             score = 100 * (1 - distance / 256)
             _record(candidates, asset, other, score, f"Meta PDQ match: {score:.0f}%")
         pdq_tree.add(asset.pdq_hash, asset)
-
-    _crop_pairs(assets, limits, candidates, qualified_crop_pairs)
+        _report(progress, "PDQ", index, len(assets))
 
 
 def _crop_pairs(
@@ -227,6 +314,8 @@ def _crop_pairs(
     limits: dict[str, float | int],
     candidates: dict[tuple[str, str], tuple[float, str]],
     qualified_crop_pairs: set[tuple[str, str]],
+    progress: ProgressCallback | None = None,
+    cancelled: CancelCallback | None = None,
 ) -> None:
     """Find crop matches independently instead of requiring a pHash candidate first."""
     tree = BKTree()
@@ -234,11 +323,14 @@ def _crop_pairs(
     radius = int(float(limits["crop_distance"]))
     required_ratio = float(limits["crop_ratio"])
 
-    for asset in assets:
+    for index, asset in enumerate(assets, 1):
+        _check_cancelled(cancelled)
         if not asset.crop_hashes or asset.vpdq_hashes:
+            _report(progress, "crop-resistant", index, len(assets))
             continue
         segment_hashes = _parse_crop_hashes(asset.crop_hashes)
         if not segment_hashes:
+            _report(progress, "crop-resistant", index, len(assets))
             continue
         parsed_by_key[asset.key] = segment_hashes
 
@@ -270,6 +362,7 @@ def _crop_pairs(
 
         for segment_hash in set(segment_hashes):
             tree.add(segment_hash, asset)
+        _report(progress, "crop-resistant", index, len(assets))
 
 
 def crop_similarity(left_json: str | None, right_json: str | None, cutoff: float) -> float:
@@ -303,11 +396,14 @@ def _video_pairs(
     assets: list[Asset],
     limits: dict[str, float | int],
     candidates: dict[tuple[str, str], tuple[float, str]],
+    progress: ProgressCallback | None = None,
+    cancelled: CancelCallback | None = None,
 ) -> None:
     videos = [asset for asset in assets if asset.vpdq_hashes]
-    token_index: dict[tuple[int, str], set[int]] = defaultdict(set)
+    token_index: dict[tuple[int, str], list[int]] = defaultdict(list)
     parsed: list[list[tuple[str, int]]] = []
     for index, asset in enumerate(videos):
+        _check_cancelled(cancelled)
         frames = [
             (str(frame["h"]), int(frame.get("q", 100)))
             for frame in json.loads(asset.vpdq_hashes or "[]")
@@ -320,34 +416,44 @@ def _video_pairs(
                 continue
             for band in range(16):
                 tokens.add((band, frame_hash[band * 4 : band * 4 + 4]))
+
+        # Count seeds only for this asset instead of materializing every possible
+        # pair for the entire library. Random videos commonly share one 16-bit
+        # token; real frame overlap shares several. Requiring stronger evidence
+        # before full verification removes the combinatorial memory explosion.
+        seed_counts: dict[int, int] = defaultdict(int)
         for token in tokens:
-            token_index[token].add(index)
+            for other_index in token_index.get(token, ()):
+                seed_counts[other_index] += 1
 
-    possible: set[tuple[int, int]] = set()
-    for matches in token_index.values():
-        ordered = sorted(matches)
-        for position, left_index in enumerate(ordered):
-            for right_index in ordered[position + 1 :]:
-                possible.add((left_index, right_index))
-
-    for left_index, right_index in possible:
-        left_frames = parsed[left_index]
-        right_frames = parsed[right_index]
-        left_pct, right_pct = vpdq_similarity(
-            left_frames,
-            right_frames,
-            int(limits["vpdq_distance"]),
-        )
-        required = float(limits["vpdq_match"])
-        if min(left_pct, right_pct) >= required:
-            score = 100 * min(left_pct, right_pct)
-            _record(
-                candidates,
-                videos[left_index],
-                videos[right_index],
-                score,
-                f"vPDQ frames: {left_pct:.0%} / {right_pct:.0%}",
+        for other_index, shared_seeds in seed_counts.items():
+            other_frames = parsed[other_index]
+            shorter = min(len(frames), len(other_frames))
+            required_seeds = max(1, min(8, math.ceil(shorter * 0.2)))
+            if shared_seeds < required_seeds:
+                continue
+            other = videos[other_index]
+            if asset.sha256 and asset.sha256 == other.sha256:
+                continue
+            left_pct, right_pct = vpdq_similarity(
+                other_frames,
+                frames,
+                int(limits["vpdq_distance"]),
             )
+            required = float(limits["vpdq_match"])
+            if min(left_pct, right_pct) >= required:
+                score = 100 * min(left_pct, right_pct)
+                _record(
+                    candidates,
+                    other,
+                    asset,
+                    score,
+                    f"vPDQ frames: {left_pct:.0%} / {right_pct:.0%}",
+                )
+
+        for token in tokens:
+            token_index[token].append(index)
+        _report(progress, "vPDQ", index + 1, len(videos))
 
 
 def vpdq_similarity(

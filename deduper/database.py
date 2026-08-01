@@ -233,6 +233,23 @@ class Database:
                 )
         return len(normalized)
 
+    def set_matching_state(self, state: str) -> None:
+        with self._lock, self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO meta (key, value) VALUES ('matching_state', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (state,),
+            )
+
+    def matching_state(self) -> str:
+        with self._lock:
+            row = self.connection.execute(
+                "SELECT value FROM meta WHERE key = 'matching_state'"
+            ).fetchone()
+        return str(row["value"]) if row else "not_started"
+
     def scan_pairs(self) -> list[Pair]:
         with self._lock:
             rows = self.connection.execute(

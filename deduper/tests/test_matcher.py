@@ -3,7 +3,14 @@ from __future__ import annotations
 import json
 import unittest
 
-from deduper.matcher import acquire_pairs, hamming_hex, thresholds, vpdq_similarity
+from deduper.matcher import (
+    MatchingCancelled,
+    acquire_pair_stages,
+    acquire_pairs,
+    hamming_hex,
+    thresholds,
+    vpdq_similarity,
+)
 from deduper.models import Asset
 
 
@@ -36,6 +43,35 @@ class MatcherTests(unittest.TestCase):
         )
         self.assertEqual(len(pairs), 1)
         self.assertEqual(pairs[0][2], 100)
+
+    def test_exact_results_are_available_before_perceptual_stages(self) -> None:
+        shared = "f" * 64
+        stages = acquire_pair_stages(
+            [
+                asset("gallery/a.jpg", sha256=shared),
+                asset("gallery/b.jpg", sha256=shared),
+            ],
+            50,
+        )
+        name, pairs = next(stages)
+        self.assertEqual(name, "exact")
+        self.assertEqual(len(pairs), 1)
+        self.assertEqual(pairs[0][2], 100)
+
+    def test_cancellation_keeps_the_last_completed_stage_available(self) -> None:
+        shared = "f" * 64
+        stages = acquire_pair_stages(
+            [
+                asset("gallery/a.jpg", sha256=shared),
+                asset("gallery/b.jpg", sha256=shared),
+            ],
+            50,
+            cancelled=lambda: True,
+        )
+        name, pairs = next(stages)
+        self.assertEqual((name, len(pairs)), ("exact", 1))
+        with self.assertRaises(MatchingCancelled):
+            next(stages)
 
     def test_similar_phashes_match(self) -> None:
         pairs = acquire_pairs(
@@ -126,6 +162,25 @@ class MatcherTests(unittest.TestCase):
         )
         self.assertEqual(len(pairs), 1)
         self.assertIn("vPDQ", pairs[0][3])
+
+    def test_vpdq_ignores_a_single_random_seed_for_long_videos(self) -> None:
+        shared_band = "1234"
+        left_frames = [
+            {"h": shared_band + "a" * 60, "q": 100, "t": index}
+            for index in range(20)
+        ]
+        right_frames = [
+            {"h": shared_band + "b" * 60, "q": 100, "t": index}
+            for index in range(20)
+        ]
+        pairs = acquire_pairs(
+            [
+                asset("gallery/a.mp4", vpdq_hashes=json.dumps(left_frames)),
+                asset("gallery/b.mp4", vpdq_hashes=json.dumps(right_frames)),
+            ],
+            50,
+        )
+        self.assertEqual(pairs, [])
 
     def test_best_quality_asset_is_oriented_as_survivor(self) -> None:
         shared = "f" * 64

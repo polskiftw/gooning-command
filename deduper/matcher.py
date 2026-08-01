@@ -4,6 +4,7 @@ import json
 import math
 from collections import defaultdict
 from collections.abc import Iterable
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Callable, Iterator
 
@@ -65,6 +66,118 @@ class BKTree:
         return results
 
 
+# Process workers receive a compact copy of image hashes, not the full Asset
+# objects (especially not their enormous vPDQ frame JSON). Each process builds
+# a read-only tree once, then handles several query chunks.
+_parallel_hash_stage = ""
+_parallel_hash_records: list[tuple[str, str, str | None, tuple[str, ...]]] = []
+_parallel_hash_tree: BKTree | None = None
+_parallel_hash_radius = 0
+_parallel_crop_radius = 0.0
+
+
+def _init_parallel_hash_worker(
+    stage: str,
+    records: list[tuple[str, str, str | None, tuple[str, ...]]],
+    radius: int,
+    crop_radius: float,
+) -> None:
+    global _parallel_hash_stage, _parallel_hash_records
+    global _parallel_hash_tree, _parallel_hash_radius, _parallel_crop_radius
+    _parallel_hash_stage = stage
+    _parallel_hash_records = records
+    _parallel_hash_radius = radius
+    _parallel_crop_radius = crop_radius
+    tree = BKTree()
+    for index, record in enumerate(records):
+        tree.add(record[1], index)  # type: ignore[arg-type]
+    _parallel_hash_tree = tree
+
+
+def _parallel_hash_chunk(
+    indices: list[int],
+) -> list[tuple[tuple[str, str], float, str]]:
+    if _parallel_hash_tree is None:
+        raise RuntimeError("parallel comparison worker was not initialized")
+    found: dict[tuple[str, str], tuple[float, str]] = {}
+    for index in indices:
+        key, value, pdq_hash, crop_hashes = _parallel_hash_records[index]
+        for distance, other_value in _parallel_hash_tree.search(value, _parallel_hash_radius):
+            other_index = int(other_value)  # type: ignore[arg-type]
+            # The complete read-only tree returns both directions and the item
+            # itself. Keeping only earlier indexes emits every pair exactly once.
+            if other_index >= index:
+                continue
+            other_key, _, other_pdq, other_crop = _parallel_hash_records[other_index]
+            pair_key = tuple(sorted((key, other_key)))
+            if _parallel_hash_stage == "pHash":
+                phash_score = 100 * (1 - distance / 64)
+                pdq_score = 0.0
+                if pdq_hash and other_pdq:
+                    pdq_distance = hamming_hex(pdq_hash, other_pdq)
+                    pdq_score = 100 * (1 - pdq_distance / 256)
+                crop_score = crop_similarity_values(
+                    list(crop_hashes),
+                    list(other_crop),
+                    _parallel_crop_radius,
+                )
+                score = max(phash_score, pdq_score, crop_score)
+                reason = (
+                    f"visual match: pHash {phash_score:.0f}%, "
+                    f"PDQ {pdq_score:.0f}%, crop {crop_score:.0f}%"
+                )
+            else:
+                score = 100 * (1 - distance / 256)
+                reason = f"Meta PDQ match: {score:.0f}%"
+            current = found.get(pair_key)
+            if current is None or score > current[0]:
+                found[pair_key] = (score, reason)
+    return [(keys, score, reason) for keys, (score, reason) in found.items()]
+
+
+def _run_parallel_hash_stage(
+    stage: str,
+    records: list[tuple[str, str, str | None, tuple[str, ...]]],
+    radius: int,
+    crop_radius: float,
+    candidates: dict[tuple[str, str], tuple[float, str]],
+    workers: int,
+    progress: ProgressCallback | None,
+    cancelled: CancelCallback | None,
+) -> None:
+    if not records:
+        if progress is not None:
+            progress(stage, 0, 0)
+        return
+    chunk_size = max(100, math.ceil(len(records) / max(1, workers * 12)))
+    chunks = [
+        list(range(start, min(start + chunk_size, len(records))))
+        for start in range(0, len(records), chunk_size)
+    ]
+    pool = ProcessPoolExecutor(
+        max_workers=min(workers, len(chunks)),
+        initializer=_init_parallel_hash_worker,
+        initargs=(stage, records, radius, crop_radius),
+    )
+    futures = {pool.submit(_parallel_hash_chunk, chunk): len(chunk) for chunk in chunks}
+    completed = 0
+    try:
+        for future in as_completed(futures):
+            _check_cancelled(cancelled)
+            for keys, score, reason in future.result():
+                current = candidates.get(keys)
+                if current is None or score > current[0]:
+                    candidates[keys] = (round(min(100.0, score), 2), reason)
+            completed += futures[future]
+            if progress is not None:
+                progress(stage, completed, len(records))
+    finally:
+        if completed < len(records):
+            for future in futures:
+                future.cancel()
+        pool.shutdown(wait=True, cancel_futures=True)
+
+
 def thresholds(slider: int) -> dict[str, float | int]:
     slider = max(0, min(99, int(slider)))
     strictness = slider / 99
@@ -86,6 +199,7 @@ def acquire_pair_stages(
     cancelled: CancelCallback | None = None,
     *,
     include_exact: bool = True,
+    compare_workers: int = 1,
 ) -> Iterator[tuple[str, list[PairResult]]]:
     """Yield safe, complete result sets after each matching stage.
 
@@ -100,11 +214,11 @@ def acquire_pair_stages(
         yield "exact", _select_and_orient(assets, candidates, qualified_crop_pairs, limits)
         _check_cancelled(cancelled)
 
-    _phash_pairs(assets, limits, candidates, progress, cancelled)
+    _phash_pairs(assets, limits, candidates, progress, cancelled, compare_workers)
     yield "phash", _select_and_orient(assets, candidates, qualified_crop_pairs, limits)
     _check_cancelled(cancelled)
 
-    _pdq_pairs(assets, limits, candidates, progress, cancelled)
+    _pdq_pairs(assets, limits, candidates, progress, cancelled, compare_workers)
     yield "pdq", _select_and_orient(assets, candidates, qualified_crop_pairs, limits)
     _check_cancelled(cancelled)
 
@@ -119,7 +233,7 @@ def acquire_pair_stages(
     yield "images", _select_and_orient(assets, candidates, qualified_crop_pairs, limits)
     _check_cancelled(cancelled)
 
-    _video_pairs(assets, limits, candidates, progress, cancelled)
+    _video_pairs(assets, limits, candidates, progress, cancelled, compare_workers)
     yield "complete", _select_and_orient(assets, candidates, qualified_crop_pairs, limits)
 
 
@@ -298,7 +412,30 @@ def _phash_pairs(
     candidates: dict[tuple[str, str], tuple[float, str]],
     progress: ProgressCallback | None = None,
     cancelled: CancelCallback | None = None,
+    compare_workers: int = 1,
 ) -> None:
+    if compare_workers > 1:
+        records = [
+            (
+                asset.key,
+                asset.phash,
+                asset.pdq_hash,
+                tuple(_parse_crop_hashes(asset.crop_hashes)) if asset.crop_hashes else (),
+            )
+            for asset in assets
+            if asset.phash and not asset.vpdq_hashes
+        ]
+        _run_parallel_hash_stage(
+            "pHash",
+            records,
+            int(limits["phash"]),
+            float(limits["crop_distance"]),
+            candidates,
+            compare_workers,
+            progress,
+            cancelled,
+        )
+        return
     tree = BKTree()
     radius = int(limits["phash"])
     for index, asset in enumerate(assets, 1):
@@ -329,7 +466,25 @@ def _pdq_pairs(
     candidates: dict[tuple[str, str], tuple[float, str]],
     progress: ProgressCallback | None = None,
     cancelled: CancelCallback | None = None,
+    compare_workers: int = 1,
 ) -> None:
+    if compare_workers > 1:
+        records = [
+            (asset.key, asset.pdq_hash, None, ())
+            for asset in assets
+            if asset.pdq_hash and not asset.vpdq_hashes
+        ]
+        _run_parallel_hash_stage(
+            "PDQ",
+            records,
+            int(limits["pdq"]),
+            0.0,
+            candidates,
+            compare_workers,
+            progress,
+            cancelled,
+        )
+        return
     pdq_tree = BKTree()
     pdq_radius = int(limits["pdq"])
     for index, asset in enumerate(assets, 1):
@@ -427,16 +582,41 @@ def crop_similarity_values(left: list[str], right: list[str], cutoff: float) -> 
     return 100 * min(left_matches / len(left), right_matches / len(right))
 
 
+VpdqJob = tuple[
+    int,
+    int,
+    list[tuple[str, int]],
+    list[tuple[str, int]],
+    int,
+    float,
+]
+
+
+def _verify_vpdq_chunk(
+    jobs: list[VpdqJob],
+) -> list[tuple[int, int, float, float]]:
+    matches: list[tuple[int, int, float, float]] = []
+    for left_index, right_index, left_frames, right_frames, distance, required in jobs:
+        left_pct, right_pct = vpdq_similarity(left_frames, right_frames, distance)
+        if min(left_pct, right_pct) >= required:
+            matches.append((left_index, right_index, left_pct, right_pct))
+    return matches
+
+
 def _video_pairs(
     assets: list[Asset],
     limits: dict[str, float | int],
     candidates: dict[tuple[str, str], tuple[float, str]],
     progress: ProgressCallback | None = None,
     cancelled: CancelCallback | None = None,
+    compare_workers: int = 1,
 ) -> None:
     videos = [asset for asset in assets if asset.vpdq_hashes]
     token_index: dict[tuple[int, str], list[int]] = defaultdict(list)
     parsed: list[list[tuple[str, int]]] = []
+    jobs: list[VpdqJob] = []
+    distance = int(limits["vpdq_distance"])
+    required = float(limits["vpdq_match"])
     for index, asset in enumerate(videos):
         _check_cancelled(cancelled)
         frames = [
@@ -470,25 +650,57 @@ def _video_pairs(
             other = videos[other_index]
             if asset.sha256 and asset.sha256 == other.sha256:
                 continue
-            left_pct, right_pct = vpdq_similarity(
-                other_frames,
-                frames,
-                int(limits["vpdq_distance"]),
+            jobs.append(
+                (other_index, index, other_frames, frames, distance, required)
             )
-            required = float(limits["vpdq_match"])
-            if min(left_pct, right_pct) >= required:
-                score = 100 * min(left_pct, right_pct)
-                _record(
-                    candidates,
-                    other,
-                    asset,
-                    score,
-                    f"vPDQ frames: {left_pct:.0%} / {right_pct:.0%}",
-                )
 
         for token in tokens:
             token_index[token].append(index)
-        _report(progress, "vPDQ", index + 1, len(videos))
+        _report(progress, "vPDQ index", index + 1, len(videos))
+
+    if not jobs:
+        if progress is not None:
+            progress("vPDQ", 0, 0)
+        return
+
+    chunk_size = max(8, math.ceil(len(jobs) / max(1, compare_workers * 12)))
+    chunks = [jobs[start : start + chunk_size] for start in range(0, len(jobs), chunk_size)]
+    completed = 0
+
+    def save_matches(matches: list[tuple[int, int, float, float]]) -> None:
+        for left_index, right_index, left_pct, right_pct in matches:
+            score = 100 * min(left_pct, right_pct)
+            _record(
+                candidates,
+                videos[left_index],
+                videos[right_index],
+                score,
+                f"vPDQ frames: {left_pct:.0%} / {right_pct:.0%}",
+            )
+
+    if compare_workers <= 1:
+        for chunk in chunks:
+            _check_cancelled(cancelled)
+            save_matches(_verify_vpdq_chunk(chunk))
+            completed += len(chunk)
+            if progress is not None:
+                progress("vPDQ", completed, len(jobs))
+        return
+
+    pool = ProcessPoolExecutor(max_workers=min(compare_workers, len(chunks)))
+    futures = {pool.submit(_verify_vpdq_chunk, chunk): len(chunk) for chunk in chunks}
+    try:
+        for future in as_completed(futures):
+            _check_cancelled(cancelled)
+            save_matches(future.result())
+            completed += futures[future]
+            if progress is not None:
+                progress("vPDQ", completed, len(jobs))
+    finally:
+        if completed < len(jobs):
+            for future in futures:
+                future.cancel()
+        pool.shutdown(wait=True, cancel_futures=True)
 
 
 def vpdq_similarity(

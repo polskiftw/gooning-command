@@ -57,9 +57,14 @@ class FastDeduperApp(DeduperApp):
             )
 
             stage_totals = {
-                "pHash": len(visual_assets),
-                "PDQ": len(visual_assets),
+                "pHash": sum(
+                    1 for asset in visual_assets if asset.phash and not asset.vpdq_hashes
+                ),
+                "PDQ": sum(
+                    1 for asset in visual_assets if asset.pdq_hash and not asset.vpdq_hashes
+                ),
                 "crop-resistant": len(visual_assets),
+                "vPDQ index": sum(1 for asset in visual_assets if asset.vpdq_hashes),
                 "vPDQ": sum(1 for asset in visual_assets if asset.vpdq_hashes),
             }
             self._ui(self._begin_matching_progress, stage_totals, sha_target_count)
@@ -75,6 +80,7 @@ class FastDeduperApp(DeduperApp):
                     matching_progress,
                     self.scan_cancel.is_set,
                     include_exact=False,
+                    compare_workers=self.config.compare_workers,
                 ):
                     target_count = self.database.replace_pairs(
                         pairs,
@@ -128,12 +134,13 @@ class FastDeduperApp(DeduperApp):
             "pHash": "pHash",
             "PDQ": "PDQ",
             "crop-resistant": "Crop",
+            "vPDQ index": "vPDQ index",
             "vPDQ": "vPDQ",
         }
         parts = []
         completed_total = 0
         work_total = 0
-        for stage in ("pHash", "PDQ", "crop-resistant", "vPDQ"):
+        for stage in ("pHash", "PDQ", "crop-resistant", "vPDQ index", "vPDQ"):
             total = self.matching_totals.get(stage, 0)
             completed = min(self.matching_completed.get(stage, 0), total)
             completed_total += completed
@@ -142,6 +149,7 @@ class FastDeduperApp(DeduperApp):
             parts.append(f"{labels[stage]} {completed:,}/{total:,} ({percent}%)")
         overall = 100 if work_total == 0 else round(completed_total * 100 / work_total)
         self.comparison_progress.set(
+            f"CPU ×{self.config.compare_workers}  •  "
             f"SHA extras {self.sha_target_count:,} (hidden)  •  "
             + "  •  ".join(parts)
             + f"  •  FULL CHECK {overall}%"

@@ -28,6 +28,25 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.gallery_prefix, "gallery/")
         self.assertEqual(config.secret_access_key, "secret=with=equals")
         self.assertTrue(config.allow_delete)
+        self.assertEqual(config.compare_workers, 16)
+
+    def test_parses_compare_workers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.txt"
+            path.write_text(
+                "\n".join(
+                    [
+                        "R2_ACCOUNT_ID=account",
+                        "R2_ACCESS_KEY_ID=key",
+                        "R2_SECRET_ACCESS_KEY=secret",
+                        "R2_BUCKET_NAME=bucket",
+                        "COMPARE_WORKERS=24",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            config = parse_config(path)
+        self.assertEqual(config.compare_workers, 24)
 
     def test_rejects_missing_required_values(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -84,6 +84,34 @@ class MatcherTests(unittest.TestCase):
         )
         self.assertEqual(len(pairs), 1)
 
+    def test_parallel_image_comparison_matches_single_process_results(self) -> None:
+        items = [
+            asset(
+                "gallery/a.jpg",
+                sha256="a" * 64,
+                phash="0000000000000000",
+                pdq_hash="0" * 64,
+                crop_hashes=json.dumps(["0" * 16, "f" * 16]),
+            ),
+            asset(
+                "gallery/b.jpg",
+                sha256="b" * 64,
+                phash="0000000000000003",
+                pdq_hash="0" * 63 + "3",
+                crop_hashes=json.dumps(["0" * 16, "5" * 16]),
+            ),
+            asset(
+                "gallery/c.jpg",
+                sha256="c" * 64,
+                phash="f" * 16,
+                pdq_hash="f" * 64,
+                crop_hashes=json.dumps(["a" * 16]),
+            ),
+        ]
+        single = list(acquire_pair_stages(items, 50, compare_workers=1))
+        parallel = list(acquire_pair_stages(items, 50, compare_workers=2))
+        self.assertEqual(parallel, single)
+
     def test_crop_hashes_discover_pair_without_phash_candidate(self) -> None:
         shared = "0" * 16
         pairs = acquire_pairs(

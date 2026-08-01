@@ -23,6 +23,7 @@ class Config:
     max_video_frames: int = 120
     scan_workers: int = 10
     video_workers: int = 3
+    compare_workers: int = 16
 
     @property
     def endpoint_url(self) -> str:
@@ -68,9 +69,11 @@ def parse_config(path: Path) -> Config:
         max_video_frames = int(values.get("MAX_VIDEO_FRAMES", "120"))
         scan_workers = int(values.get("SCAN_WORKERS", "10"))
         video_workers = int(values.get("VIDEO_WORKERS", "3"))
+        compare_workers = int(values.get("COMPARE_WORKERS", "16"))
     except ValueError as exc:
         raise ConfigError(
-            "VIDEO_SAMPLE_SECONDS, MAX_VIDEO_FRAMES, SCAN_WORKERS, and VIDEO_WORKERS must be numbers"
+            "VIDEO_SAMPLE_SECONDS, MAX_VIDEO_FRAMES, SCAN_WORKERS, VIDEO_WORKERS, "
+            "and COMPARE_WORKERS must be numbers"
         ) from exc
 
     # 300 was the old shipped default. Treat that untouched legacy value as 120
@@ -86,6 +89,8 @@ def parse_config(path: Path) -> Config:
         raise ConfigError("SCAN_WORKERS must be between 1 and 32")
     if not 1 <= video_workers <= scan_workers:
         raise ConfigError("VIDEO_WORKERS must be between 1 and SCAN_WORKERS")
+    if not 1 <= compare_workers <= 32:
+        raise ConfigError("COMPARE_WORKERS must be between 1 and 32")
 
     return Config(
         account_id=values["R2_ACCOUNT_ID"],
@@ -99,4 +104,5 @@ def parse_config(path: Path) -> Config:
         max_video_frames=max_video_frames,
         scan_workers=scan_workers,
         video_workers=video_workers,
+        compare_workers=compare_workers,
     )

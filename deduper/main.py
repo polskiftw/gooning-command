@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import multiprocessing
 import tkinter as tk
 from tkinter import messagebox
 
@@ -32,4 +33,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # Required for ProcessPoolExecutor inside the packaged Windows executable.
+    multiprocessing.freeze_support()
     raise SystemExit(main())

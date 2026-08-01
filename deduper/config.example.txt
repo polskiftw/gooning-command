@@ -19,3 +19,8 @@ MAX_VIDEO_FRAMES=120
 # Tuned for Claire's i7-14700KF and fast fiber connection.
 SCAN_WORKERS=10
 VIDEO_WORKERS=3
+
+# CPU processes used only for pHash, PDQ, and vPDQ comparison. The i7-14700KF
+# has plenty of cores, so this deliberately runs hot while leaving some room
+# for previews and Windows.
+COMPARE_WORKERS=16

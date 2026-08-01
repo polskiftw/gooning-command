@@ -1,7 +1,7 @@
 CUSTOM WINDOWS FFMPEG BUILD
 ===========================
 
-Run the workflow named "Build Custom FFmpeg 10" manually from GitHub Actions.
+Run the workflow named "Build Custom FFmpeg 12" manually from GitHub Actions.
 
 SUCCESS
 -------
@@ -49,6 +49,8 @@ BUILD POLICY
 * Stable is built and uploaded before master begins.
 * Latest stable and current master.
 * Stable FFmpeg release tags are resolved through Git, not the GitHub REST API.
+* A stale non-zero MABS exit code is not trusted by itself; newly produced binaries
+  and their timestamps determine whether compilation actually succeeded.
 * Static-only selected runtime dependencies; no bundled codec DLLs.
 * Aggressive i7-14700KF tuning: -O3 and Raptor Lake target.
 * RTX 4070 Super paths: NVENC, NVDEC, CUDA headers, D3D11VA, D3D12VA,

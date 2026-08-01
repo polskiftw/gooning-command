@@ -83,6 +83,43 @@ class DatabaseTests(unittest.TestCase):
 
         self.assertEqual([pair.similarity for pair in self.database.scan_pairs()], [71.0, 99.0])
 
+    def test_exclusion_survives_later_matching_checkpoint(self) -> None:
+        left = asset("gallery/left.jpg")
+        right = asset("gallery/right.jpg")
+        extra = asset("gallery/extra.jpg")
+        self.database.upsert_inventory([left, right, extra])
+        self.database.replace_pairs([(left.key, right.key, 100.0, "exact")])
+        self.database.exclude_pair(self.database.scan_pairs()[0].id)
+
+        self.database.replace_pairs(
+            [
+                (left.key, right.key, 100.0, "exact"),
+                (left.key, extra.key, 92.0, "visual"),
+            ],
+            preserve_exclusions=True,
+        )
+
+        pairs = {(pair.left_key, pair.right_key): pair for pair in self.database.scan_pairs()}
+        self.assertEqual(pairs[(left.key, right.key)].status, "excluded")
+        self.assertEqual(pairs[(left.key, extra.key)].status, "included")
+        self.assertEqual(
+            [key for key, _pair_id, _size in self.database.queued_deletions()],
+            [extra.key],
+        )
+
+    def test_exclude_by_keys_uses_pair_rebuilt_by_checkpoint(self) -> None:
+        left = asset("gallery/left.jpg")
+        right = asset("gallery/right.jpg")
+        self.database.upsert_inventory([left, right])
+        self.database.replace_pairs([(left.key, right.key, 100.0, "exact")])
+        stale_id = self.database.scan_pairs()[0].id
+        self.database.replace_pairs([(left.key, right.key, 99.0, "visual")])
+
+        self.assertNotEqual(self.database.scan_pairs()[0].id, stale_id)
+        self.assertTrue(self.database.exclude_pair_keys(left.key, right.key))
+        self.assertEqual(self.database.scan_pairs()[0].status, "excluded")
+        self.assertEqual(self.database.queued_deletions(), [])
+
     def test_matching_state_survives_database_reopen(self) -> None:
         self.database.set_matching_state("exact")
         path = self.database.path

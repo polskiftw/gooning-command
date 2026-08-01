@@ -55,8 +55,27 @@ class MediaPreview(tk.Frame):
 
     def __init__(self, master, *, background: str = "#111"):
         super().__init__(master, background=background)
-        self.label = tk.Label(self, background=background, foreground="#aaa", text="No media")
-        self.label.pack(fill="both", expand=True)
+        # A Label changes its requested size whenever a differently sized image is
+        # assigned. That made both comparison columns repeatedly stretch and bounce
+        # while previews arrived. Canvas items never participate in geometry sizing.
+        self.canvas = tk.Canvas(
+            self,
+            background=background,
+            highlightthickness=0,
+            borderwidth=0,
+            width=1,
+            height=1,
+        )
+        self.canvas.pack(fill="both", expand=True)
+        self._image_item = self.canvas.create_image(0, 0, anchor="center")
+        self._text_item = self.canvas.create_text(
+            0,
+            0,
+            text="No media",
+            fill="#aaa",
+            justify="center",
+            anchor="center",
+        )
         self._after_id: str | None = None
         self._frames: list[Image.Image] = []
         self._frame_delays: list[int] = []
@@ -64,12 +83,13 @@ class MediaPreview(tk.Frame):
         self._capture: cv2.VideoCapture | None = None
         self._photo: ImageTk.PhotoImage | None = None
         self._generation = 0
-        self.bind("<Configure>", self._redraw)
-        self.label.bind("<Configure>", self._redraw)
+        self.canvas.bind("<Configure>", self._redraw)
 
     def clear(self, text: str = "Loading…") -> None:
         self.stop()
-        self.label.configure(image="", text=text)
+        self.canvas.itemconfigure(self._image_item, image="")
+        self.canvas.itemconfigure(self._text_item, text=text)
+        self._center_items()
 
     def stop(self) -> None:
         self._generation += 1
@@ -95,7 +115,12 @@ class MediaPreview(tk.Frame):
             else:
                 self._load_image(path)
         except Exception as exc:
-            self.label.configure(image="", text=f"Preview failed\n{type(exc).__name__}")
+            self.canvas.itemconfigure(self._image_item, image="")
+            self.canvas.itemconfigure(
+                self._text_item,
+                text=f"Preview failed\n{type(exc).__name__}",
+            )
+            self._center_items()
 
     def _load_image(self, path: Path) -> None:
         image = Image.open(path)
@@ -156,14 +181,25 @@ class MediaPreview(tk.Frame):
         self._after_id = self.after(self._frame_delays[0], self._show_video_frame, generation)
 
     def _render(self, image: Image.Image) -> None:
-        width = max(1, self.label.winfo_width())
-        height = max(1, self.label.winfo_height())
+        width = max(1, self.canvas.winfo_width())
+        height = max(1, self.canvas.winfo_height())
         rendered = image.copy()
         rendered.thumbnail((width, height), Image.Resampling.BILINEAR)
         self._photo = ImageTk.PhotoImage(rendered)
-        self.label.configure(image=self._photo, text="")
+        self.canvas.itemconfigure(self._image_item, image=self._photo)
+        self.canvas.itemconfigure(self._text_item, text="")
+        self._center_items()
+
+    def _center_items(self) -> None:
+        center = (
+            max(1, self.canvas.winfo_width()) // 2,
+            max(1, self.canvas.winfo_height()) // 2,
+        )
+        self.canvas.coords(self._image_item, *center)
+        self.canvas.coords(self._text_item, *center)
 
     def _redraw(self, _event=None) -> None:
+        self._center_items()
         if len(self._frames) == 1:
             self._render(self._frames[0])
 

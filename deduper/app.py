@@ -51,6 +51,7 @@ class DeduperApp(tk.Tk):
         self.pairs: list[Pair] = []
         self.pair_index = 0
         self.busy = False
+        self.review_locked = False
         self.preview_requests: dict[MediaPreview, int] = {}
         state = self.database.matching_state()
         if state == "complete":
@@ -214,17 +215,25 @@ class DeduperApp(tk.Tk):
     def _ui(self, callback: Callable, *args) -> None:
         self.events.put((callback, args))
 
-    def _set_busy(self, busy: bool) -> None:
+    def _set_busy(self, busy: bool, *, lock_review: bool = True) -> None:
         self.busy = busy
+        self.review_locked = busy and lock_review
         state = "disabled" if busy else "normal"
         for button in (self.scan_button, self.nuke_button):
             button.configure(state=state)
         self._set_review_state(bool(self.pairs))
 
-    def _run(self, label: str, operation: Callable[[], str], finished: Callable[[], None] | None = None) -> None:
+    def _run(
+        self,
+        label: str,
+        operation: Callable[[], str],
+        finished: Callable[[], None] | None = None,
+        *,
+        lock_review: bool = True,
+    ) -> None:
         if self.busy:
             return
-        self._set_busy(True)
+        self._set_busy(True, lock_review=lock_review)
         self.status.set(label)
 
         def worker() -> None:
@@ -288,7 +297,7 @@ class DeduperApp(tk.Tk):
                 f"{missing_count} missing, {errors} errors, {target_count} deletion candidates."
             )
 
-        self._run("Starting scan…", scan, self._refresh_pairs)
+        self._run("Starting scan…", scan, self._refresh_pairs, lock_review=False)
 
     def start_nuke(self) -> None:
         queued = self.database.queued_deletions()
@@ -415,7 +424,7 @@ class DeduperApp(tk.Tk):
             widget.load(path)
 
     def _set_review_state(self, enabled: bool) -> None:
-        state = "normal" if enabled and not self.busy else "disabled"
+        state = "normal" if enabled and not self.review_locked else "disabled"
         for button in (self.exclude_button, self.previous_button, self.next_button):
             button.configure(state=state)
 
@@ -425,7 +434,11 @@ class DeduperApp(tk.Tk):
         pair = self.pairs[self.pair_index]
         if pair.status == "excluded":
             return
-        self.database.exclude_pair(pair.id)
+        if not self.database.exclude_pair_keys(pair.left_key, pair.right_key):
+            # A checkpoint may have removed this exact pair just before the click.
+            # Refresh instead of claiming that a now-nonexistent target was excluded.
+            self._refresh_pairs()
+            return
         self.status.set(f"Excluded from this NUKE: {pair.right_key}")
         self._refresh_counts()
         self.pairs = self.database.scan_pairs()
@@ -433,13 +446,13 @@ class DeduperApp(tk.Tk):
         self._show_current_pair()
 
     def _previous(self) -> None:
-        if self.busy or not self.pairs:
+        if self.review_locked or not self.pairs:
             return
         self.pair_index = (self.pair_index - 1) % len(self.pairs)
         self._show_current_pair()
 
     def _next(self) -> None:
-        if self.busy or not self.pairs:
+        if self.review_locked or not self.pairs:
             return
         self.pair_index = (self.pair_index + 1) % len(self.pairs)
         self._show_current_pair()

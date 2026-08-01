@@ -207,7 +207,12 @@ class Database:
             ).fetchall()
         return [self._asset_from_row(row) for row in rows]
 
-    def replace_pairs(self, pairs: Iterable[tuple[str, str, float, str]]) -> int:
+    def replace_pairs(
+        self,
+        pairs: Iterable[tuple[str, str, float, str]],
+        *,
+        preserve_exclusions: bool = False,
+    ) -> int:
         normalized: dict[tuple[str, str], tuple[float, str]] = {}
         for left, right, similarity, reason in pairs:
             key = (left, right)
@@ -216,21 +221,42 @@ class Database:
                 normalized[key] = (similarity, reason)
 
         with self._lock, self.connection:
+            # A later matching checkpoint replaces and expands the result set. Keep
+            # review decisions already made while that background work was running.
+            excluded = set()
+            if preserve_exclusions:
+                excluded = {
+                    (row["left_key"], row["right_key"])
+                    for row in self.connection.execute(
+                        "SELECT left_key, right_key FROM pairs WHERE status = 'excluded'"
+                    ).fetchall()
+                }
             self.connection.execute("DELETE FROM deletion_queue")
             self.connection.execute("DELETE FROM pairs")
             for (left, right), (similarity, reason) in normalized.items():
+                is_excluded = (left, right) in excluded
                 cursor = self.connection.execute(
                     """
                     INSERT INTO pairs
-                        (left_key, right_key, similarity, reason, status)
-                    VALUES (?, ?, ?, ?, 'included')
+                        (left_key, right_key, similarity, reason, status, decision, reviewed_at)
+                    VALUES (?, ?, ?, ?, ?, ?,
+                        CASE WHEN ? = 'excluded' THEN CURRENT_TIMESTAMP ELSE NULL END)
                     """,
-                    (left, right, similarity, reason),
+                    (
+                        left,
+                        right,
+                        similarity,
+                        reason,
+                        "excluded" if is_excluded else "included",
+                        "exclude" if is_excluded else None,
+                        "excluded" if is_excluded else "included",
+                    ),
                 )
-                self.connection.execute(
-                    "INSERT OR IGNORE INTO deletion_queue (key, pair_id) VALUES (?, ?)",
-                    (right, cursor.lastrowid),
-                )
+                if not is_excluded:
+                    self.connection.execute(
+                        "INSERT OR IGNORE INTO deletion_queue (key, pair_id) VALUES (?, ?)",
+                        (right, cursor.lastrowid),
+                    )
         return len(normalized)
 
     def set_matching_state(self, state: str) -> None:
@@ -274,6 +300,27 @@ class Database:
                 (pair_id,),
             )
             self.connection.execute("DELETE FROM deletion_queue WHERE pair_id = ?", (pair_id,))
+
+    def exclude_pair_keys(self, left_key: str, right_key: str) -> bool:
+        """Exclude the current version of a pair even if a checkpoint rebuilt its row."""
+        with self._lock, self.connection:
+            row = self.connection.execute(
+                "SELECT id FROM pairs WHERE left_key = ? AND right_key = ?",
+                (left_key, right_key),
+            ).fetchone()
+            if row is None:
+                return False
+            pair_id = int(row["id"])
+            self.connection.execute(
+                """
+                UPDATE pairs
+                SET status = 'excluded', decision = 'exclude', reviewed_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (pair_id,),
+            )
+            self.connection.execute("DELETE FROM deletion_queue WHERE pair_id = ?", (pair_id,))
+            return True
 
     def queued_deletions(self) -> list[tuple[str, int | None, int]]:
         with self._lock:

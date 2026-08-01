@@ -65,7 +65,10 @@ class FastDeduperApp(DeduperApp):
                     matching_progress,
                     self.scan_cancel.is_set,
                 ):
-                    target_count = self.database.replace_pairs(pairs)
+                    target_count = self.database.replace_pairs(
+                        pairs,
+                        preserve_exclusions=stage != "exact",
+                    )
                     self.database.set_matching_state(stage)
                     self._ui(self._matching_stage_saved, stage, target_count)
             except MatchingCancelled:
@@ -90,7 +93,7 @@ class FastDeduperApp(DeduperApp):
                 f"{missing_count} missing, {errors} errors, {target_count} deletion candidates."
             )
 
-        self._run("Starting parallel scan…", scan, self._refresh_pairs)
+        self._run("Starting parallel scan…", scan, self._refresh_pairs, lock_review=False)
 
     def _matching_stage_saved(self, stage: str, target_count: int) -> None:
         labels = {

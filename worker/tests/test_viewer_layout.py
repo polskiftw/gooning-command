@@ -67,6 +67,22 @@ class ViewerLayoutHardeningTests(unittest.TestCase):
         self.assertIn('"cache-control": "no-cache"', asset_response)
         self.assertNotIn("max-age", asset_response)
 
+    def test_tag_sidebar_is_desktop_only(self) -> None:
+        self.assertIn("#tag-sidebar {", self.css)
+        self.assertIn("#tag-sidebar { display: none; }", self.css)
+        self.assertIn('id="tag-sidebar"', self.viewer)
+        self.assertIn("if (!mobileQuery.matches) loadTagCatalog()", self.script)
+
+    def test_selected_tags_use_server_side_and_matching(self) -> None:
+        self.assertIn('url.searchParams.getAll("tag")', self.viewer)
+        self.assertIn("requestedIds.every((id) => item.tags.includes(id))", self.viewer)
+        self.assertIn('parameters.append("tag", tag)', self.script)
+        self.assertIn("checkbox.value = entry.name", self.script)
+
+    def test_impossible_tag_combination_has_plain_empty_state(self) -> None:
+        self.assertIn('noMatch.textContent = "Nothing matches those tags."', self.script)
+        self.assertIn('#no-match {', self.css)
+
 
 if __name__ == "__main__":
     unittest.main()

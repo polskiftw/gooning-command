@@ -2,6 +2,7 @@ import APP_SCRIPT from "./app.js";
 import APP_STYLE from "./style.css";
 
 const INDEX_KEY = "gallery-index.json";
+const TAG_INDEX_KEY = "_internal/tag-index-v1.json";
 const SOURCE_CONFIG_KEY = "_internal/reddit-sources.json";
 const SUBREDDIT_NAME_PATTERN = /^[A-Za-z0-9_]{3,21}$/;
 const MAX_MANAGED_SOURCES = 500;
@@ -12,6 +13,7 @@ const STILL_EXTENSIONS = new Set(["jpg", "jpeg", "png", "webp"]);
 const CLIP_EXTENSIONS = new Set(["gif", "mp4", "m4v", "webm"]);
 
 let indexCache = { expires: 0, items: [] };
+let tagIndexCache = { expires: 0, catalog: [], items: [] };
 
 export default {
   async fetch(request, env) {
@@ -20,6 +22,7 @@ export default {
     if (url.pathname === "/") return htmlResponse(renderAppHtml(env.CONTACT_EMAIL));
     if (url.pathname === "/style.css") return assetResponse(APP_STYLE, "text/css; charset=utf-8");
     if (url.pathname === "/app.js") return assetResponse(APP_SCRIPT, "text/javascript; charset=utf-8");
+    if (url.pathname === "/api/tags") return tagCatalog(env);
     if (url.pathname === "/api/random") return randomMedia(request, env);
     if (url.pathname === "/api/sources") {
       if (request.method !== "POST") {
@@ -72,10 +75,93 @@ async function loadIndex(env) {
   return items;
 }
 
+async function loadTagIndex(env) {
+  const now = Date.now();
+  if (tagIndexCache.expires > now) return tagIndexCache;
+
+  const object = await env.MEDIA_BUCKET.get(TAG_INDEX_KEY);
+  if (!object) {
+    tagIndexCache = { expires: now + 30_000, catalog: [], items: [] };
+    return tagIndexCache;
+  }
+
+  let payload;
+  try {
+    payload = JSON.parse(await object.text());
+  } catch {
+    tagIndexCache = { expires: now + 30_000, catalog: [], items: [] };
+    return tagIndexCache;
+  }
+
+  const rawCatalog = Array.isArray(payload?.catalog) ? payload.catalog : [];
+  const rawItems = Array.isArray(payload?.items) ? payload.items : [];
+  if (payload?.version !== 1 || rawCatalog.length > 20_000 || rawItems.length > 250_000) {
+    tagIndexCache = { expires: now + 30_000, catalog: [], items: [] };
+    return tagIndexCache;
+  }
+
+  const catalog = rawCatalog
+    .map((entry, id) => ({
+      id,
+      name: Array.isArray(entry) ? String(entry[0] || "") : "",
+      count: Array.isArray(entry) ? Number(entry[1]) : 0,
+    }))
+    .filter((entry) => entry.name && Number.isSafeInteger(entry.count) && entry.count > 0);
+  const validIds = new Set(catalog.map((entry) => entry.id));
+  const items = rawItems
+    .filter((entry) => (
+      Array.isArray(entry)
+      && entry.length === 3
+      && typeof entry[0] === "string"
+      && entry[0].startsWith("gallery/")
+      && ALLOWED_EXTENSIONS.includes(String(entry[1]).toLowerCase())
+      && Array.isArray(entry[2])
+      && entry[2].length <= 512
+      && entry[2].every((id) => Number.isSafeInteger(id) && validIds.has(id))
+    ))
+    .map((entry) => ({ key: entry[0], ext: String(entry[1]).toLowerCase(), tags: entry[2] }));
+
+  tagIndexCache = {
+    expires: now + 60_000,
+    catalog,
+    items,
+    generatedAt: typeof payload.generated_at === "string" ? payload.generated_at : "",
+  };
+  return tagIndexCache;
+}
+
+async function tagCatalog(env) {
+  const tagIndex = await loadTagIndex(env);
+  return jsonResponse({
+    version: 1,
+    generatedAt: tagIndex.generatedAt || "",
+    tags: tagIndex.catalog,
+  });
+}
+
 async function randomMedia(request, env) {
   const url = new URL(request.url);
   const requested = (url.searchParams.get("ext") || "all").toLowerCase();
-  const items = await loadIndex(env);
+  const requestedTags = [...new Set(url.searchParams.getAll("tag"))];
+  if (requestedTags.length > 32) {
+    return jsonResponse({ error: "Too many tags are selected." }, 400);
+  }
+  if (requestedTags.some((name) => !name || name.length > 128)) {
+    return jsonResponse({ error: "The selected tags are invalid." }, 400);
+  }
+
+  let items;
+  if (requestedTags.length) {
+    const tagIndex = await loadTagIndex(env);
+    const idsByName = new Map(tagIndex.catalog.map((entry) => [entry.name, entry.id]));
+    if (requestedTags.some((name) => !idsByName.has(name))) {
+      return jsonResponse({ error: "The selected tags are no longer available." }, 400);
+    }
+    const requestedIds = requestedTags.map((name) => idsByName.get(name));
+    items = tagIndex.items.filter((item) => requestedIds.every((id) => item.tags.includes(id)));
+  } else {
+    items = await loadIndex(env);
+  }
 
   let choices = items;
   if (requested === "stills") {
@@ -86,7 +172,9 @@ async function randomMedia(request, env) {
     choices = items.filter((item) => String(item.ext).toLowerCase() === requested);
   }
 
-  if (!choices.length) return jsonResponse({ error: "No media matches that filter." }, 404);
+  if (!choices.length) {
+    return jsonResponse({ error: "Nothing matches those tags." }, 404);
+  }
   const item = choices[Math.floor(Math.random() * choices.length)];
   return jsonResponse({
     key: item.key,
@@ -374,6 +462,11 @@ const APP_HTML = String.raw`<!doctype html>
   <script src="/app.js" defer></script>
 </head>
 <body>
+  <aside id="tag-sidebar" aria-labelledby="tag-sidebar-title">
+    <div id="tag-sidebar-title">Tags</div>
+    <div id="tag-sidebar-state">Loading tags…</div>
+    <div id="tag-list"></div>
+  </aside>
   <main id="stage" title="Click media to toggle fit/native size"></main>
   <div id="bar">
     <button id="next" type="button">Next random</button>

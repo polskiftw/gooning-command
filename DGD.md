@@ -1,6 +1,6 @@
 # GParty — DGD Guide
 
-GParty collects media into Cloudflare R2, serves it through a Cloudflare Worker, and includes a Windows program for reviewing and deleting duplicate media.
+GParty collects media into Cloudflare R2, tags it locally, serves it through a Cloudflare Worker, and includes a Windows program for reviewing and deleting duplicate media.
 
 This guide covers the whole project from setup through routine use.
 
@@ -21,6 +21,8 @@ app.py
                 |
                 +--> Cloudflare Worker viewer
                 |
+                +--> Windows GParty Tag Time
+                |
                 +--> Windows GParty Deduper
 ```
 
@@ -32,6 +34,7 @@ The programs agree on these names:
 | Media list inside R2 | `gallery-index.json` |
 | Download history inside R2 | `_internal/gallery-dl-archive-v0.2.1.sqlite3` |
 | Private viewer source list inside R2 | `_internal/reddit-sources.json` |
+| Private Tag Time index inside R2 | `_internal/tag-index-v1.json` |
 | Worker bucket binding | `MEDIA_BUCKET` |
 | Bucket-name secret | `R2_BUCKET_NAME` |
 
@@ -49,10 +52,12 @@ The programs agree on these names:
 | `worker/wrangler.jsonc` | Local Wrangler settings and Worker wiring |
 | `worker/repair_index.py` | Adds missing R2 objects to the index |
 | `deduper/` | Windows deduper code, build recipe, configuration sample, and tests |
+| `tagtime/` | Windows Tag Time code, build recipe, configuration sample, and tests |
 | `.github/workflows/yoink.yml` | Collector workflow |
 | `.github/workflows/flush.yml` | Index repair workflow |
 | `.github/workflows/update-cf-web.yml` | Worker deployment workflow |
 | `.github/workflows/build-deduper.yml` | Windows deduper build workflow |
+| `.github/workflows/build-tag-time.yml` | Windows Tag Time build workflow |
 | `README.md` | Standard project documentation |
 | `DGD.md` | This complete plain-language documentation |
 
@@ -311,12 +316,17 @@ The Worker routes are:
 |---|---|
 | `/` | Loads the viewer |
 | `/api/random` | Picks a random indexed item using the selected filter |
+| `/api/tags` | Returns the available tag names and each tag's individual count |
 | `POST /api/sources` | Adds one validated subreddit to the private R2 source list |
 | `/media/<encoded-key>` | Streams one indexed R2 object, including video range requests |
 
-The Worker reads `gallery-index.json` through `env.MEDIA_BUCKET`. It only accepts indexed keys beginning with `gallery/`.
+The Worker reads `gallery-index.json` and the private Tag Time index through `env.MEDIA_BUCKET`. It only accepts media keys beginning with `gallery/`. The private tag index itself cannot be served by `/media/`.
 
 The Worker's in-memory index cache lasts 60 seconds. A corrected index may therefore take up to one minute to appear in the viewer.
+
+On desktop, the left sidebar shows every discovered tag with a checkbox and that tag's individual count. With no boxes checked, random behaves exactly as before. With one box checked, random uses only media with that tag. With several checked, the media must have every checked tag. The site does not calculate or display a combined count. An impossible combination shows `Nothing matches those tags.`
+
+The entire tag sidebar is absent on screens 700 pixels wide or narrower. Mobile sizing, tap-to-random behavior, filters, and the hardened bottom-pixel layout stay unchanged.
 
 The viewer validates every random-item response before replacing the current media. It automatically retries temporary server failures, timeouts, empty replies, malformed JSON, and invalid media addresses up to three times. If all attempts fail, the current media stays visible and the viewer shows a useful retry message instead of Safari's generic parsing error.
 
@@ -339,7 +349,7 @@ Run:
 ```text
 GitHub repository
 → Actions
-→ update-cf-web
+→ update-cf-web 3
 → Run workflow
 ```
 
@@ -363,6 +373,71 @@ preview_urls = false
 ```
 
 This keeps both the normal `workers.dev` address and version preview addresses disabled after every deployment. The certificate-protected custom hostname remains the intended route.
+
+# 10A. Download GParty Tag Time
+
+Open this permanent download link:
+
+```text
+https://github.com/polskiftw/gparty/releases/download/tag-time-windows-latest/GParty-Tag-Time-Windows.zip
+```
+
+Extract `GParty-Tag-Time-Windows.zip` into a normal folder on the Windows PC. Do not run it from inside the ZIP.
+
+The build named **Build GParty Tag Time 1** creates the Windows app automatically whenever Tag Time code changes on `main`. It runs the tests first, builds `GParty Tag Time.exe`, and replaces the permanent download only if it still represents the newest `main` commit.
+
+# 10B. Configure GParty Tag Time
+
+In the extracted Tag Time folder:
+
+1. Find `config.example.txt`.
+2. Make a copy in the same folder.
+3. Rename the copy exactly `config.txt`.
+4. Open the deduper's existing `config.txt`.
+5. Copy these four complete lines from the deduper file into the Tag Time file:
+
+```text
+R2_ACCOUNT_ID=
+R2_ACCESS_KEY_ID=
+R2_SECRET_ACCESS_KEY=
+R2_BUCKET_NAME=
+```
+
+The parts after each `=` must contain the same values as the deduper. Do not paste these secrets into GitHub code, README files, screenshots, or chat.
+
+Leave the rest exactly like this:
+
+```text
+GALLERY_PREFIX=gallery/
+TAG_INDEX_KEY=_internal/tag-index-v1.json
+TAG_THRESHOLD=0.4
+ANIMATED_FRAMES=4
+PUBLISH_EVERY=100
+```
+
+The R2 token must be allowed to list and read media and write the tag index. No new bucket, Cloudflare Worker binding, Cloudflare API token, Worker secret, or dashboard setting is needed.
+
+# 10C. Run GParty Tag Time
+
+1. Double-click `GParty Tag Time.exe`.
+2. Press the large **TAG TIME** button.
+3. Leave the app open while it works. You may use the PC normally.
+4. You may close Tag Time whenever you want. It finishes the current file, uploads the newest catalog, and closes.
+5. Open it later and press **TAG TIME** again to continue.
+
+The first press downloads the official JoyTag model, about 366 MB, into `data/model/`. This happens only once. Tag Time uses Windows DirectML to run on the RTX 4070 Super; it does not require a separate CUDA installation. If GPU initialization is unavailable, it can fall back to CPU.
+
+For every R2 item, Tag Time temporarily downloads one file, samples it, records its tags in `data/tag-time.sqlite3`, and removes the temporary copy. Still images use one frame. GIFs and videos use four representative frames from across the animation. Scores from those frames are combined, and tags at or above `0.4` are kept.
+
+Tag Time immediately saves each successful file before moving to the next. A crash, reboot, closed window, bad media file, or lost connection does not erase earlier work. The next run skips unchanged completed files, tags new files, retags changed files, and retries failures. Files removed from R2 are removed from the next published catalog.
+
+Every 100 newly completed files, and again when the run ends or pauses, Tag Time uploads:
+
+```text
+_internal/tag-index-v1.json
+```
+
+Wait up to 60 seconds for the Worker's cache, then reload the desktop viewer to see new tags or counts. Mobile never shows the tag sidebar.
 
 # 11. Download the Windows deduper
 
@@ -643,6 +718,23 @@ cd deduper
 pyinstaller --clean --noconfirm GPartyDeduper.spec
 ```
 
+For Tag Time:
+
+```text
+python -m venv .venv-tag-time
+.venv-tag-time\Scripts\activate
+pip install -r tagtime\requirements-build.txt
+python -m unittest discover -s tagtime\tests -v
+python -m tagtime.main
+```
+
+Build the Tag Time EXE:
+
+```text
+cd tagtime
+pyinstaller --clean --noconfirm GPartyTagTime.spec
+```
+
 # 22. Wiring checklist
 
 | Producer or setting | Consumer | Must match |
@@ -653,6 +745,8 @@ pyinstaller --clean --noconfirm GPartyDeduper.spec
 | GitHub R2 bucket secret | Collector, Flush, deployment | `R2_BUCKET_NAME` |
 | Deduper `R2_BUCKET_NAME` | The same R2 library | Same bucket |
 | Viewer `POST /api/sources` | Yoink `prepare-sources` mode | `_internal/reddit-sources.json` |
+| Tag Time `TAG_INDEX_KEY` | Worker `TAG_INDEX_KEY` | `_internal/tag-index-v1.json` |
+| Tag Time R2 settings | Deduper R2 settings | Same four values and same bucket |
 
 # 23. License
 

@@ -10,7 +10,7 @@ $content = [IO.File]::ReadAllText($buildScript)
 $replacements = [ordered]@{
     "'hdmv_pgs_subtitle'" = "'pgssub'"
     "'vmaf','loudnorm'"   = "'libvmaf','loudnorm'"
-    "[A-Z\\.]{3,8}"       = "[A-Z\\.]{2,8}"
+    '[A-Z\.]{3,8}'       = '[A-Z\.]{2,8}'
 }
 
 foreach ($pair in $replacements.GetEnumerator()) {

@@ -1,7 +1,7 @@
 CUSTOM WINDOWS FFMPEG BUILD
 ===========================
 
-Run the workflow named "Build Custom FFmpeg 17" manually from GitHub Actions.
+Run the workflow named "Build Custom FFmpeg 18" manually from GitHub Actions.
 
 SUCCESS
 -------
@@ -20,6 +20,7 @@ Each folder contains:
   ffmpeg.exe
   ffprobe.exe
   ffplay.exe
+  source-identity.txt
   build-info.txt
   feature reports
   SHA256SUMS.txt
@@ -45,12 +46,17 @@ BUILD POLICY
 ------------
 * Windows x64, MinGW-w64 GCC, UCRT.
 * Fresh sources and clean compilation every run. No cache.
+* media-autobuild_suite is pinned to the audited commit recorded in build.ps1;
+  moving upstream code cannot silently change a four-hour build.
 * One compiler thread for the entire build.
 * Stable is built and uploaded before master begins.
-* Latest stable and current master.
+* Latest stable and current master are resolved to exact immutable commits before
+  each compilation.
 * Stable FFmpeg release tags are resolved through Git, not the GitHub REST API.
-* A stale non-zero MABS exit code is not trusted by itself; newly produced binaries
-  and their timestamps determine whether compilation actually succeeded.
+* MABS output streams live and is also logged. A non-zero exit code is forgiven only
+  when MABS printed its success marker and all three executables were freshly linked.
+* The checked-in build script is the script that runs. No workflow-time scripts patch
+  or reconstruct the validator.
 * Static-only selected runtime dependencies; no bundled codec DLLs.
 * Windows API-set contract imports are recognized as operating-system dependencies
   even when their virtual DLL names do not exist as files in System32.
@@ -63,6 +69,8 @@ BUILD POLICY
   broad network transports, AviSynth, VapourSynth, frei0r and OpenCL are excluded.
 * The build fails rather than silently dropping a required feature or replacing a
   selected source dependency with an unexplained prebuilt runtime library.
+* Every executable must be PE32+ AMD64, pass dumpbin inspection, identify the intended
+  FFmpeg source revision, and expose every explicitly requested configure option.
 
 MAINTENANCE RULE
 ----------------

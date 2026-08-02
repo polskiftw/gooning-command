@@ -1,11 +1,15 @@
-name: Build Custom FFmpeg 17
-run-name: Build Custom FFmpeg 17
+name: Build Custom FFmpeg 18
+run-name: Build Custom FFmpeg 18
 
 on:
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: custom-ffmpeg-build
+  cancel-in-progress: false
 
 env:
   BUILD_ROOT: C:\ffb
@@ -20,19 +24,9 @@ jobs:
 
     steps:
       - name: Checkout workflow files
-        uses: actions/checkout@v4
-
-      - name: Replace REST tag lookup with Git
-        shell: pwsh
-        run: '& "${{ github.workspace }}\.github\ffmpeg-build\patch-stable-tag-resolver.ps1"'
-
-      - name: Handle successful MABS build with stale exit code
-        shell: pwsh
-        run: '& "${{ github.workspace }}\.github\ffmpeg-build\patch-mabs-exit-code.ps1"'
-
-      - name: Correct FFmpeg feature validation names
-        shell: pwsh
-        run: '& "${{ github.workspace }}\.github\ffmpeg-build\patch-feature-validation.ps1"'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Validate PowerShell build scripts
         shell: pwsh
@@ -67,13 +61,23 @@ jobs:
           exit $LASTEXITCODE
 
       - name: Prepare stable checkpoint
+        id: stable_package
         if: steps.stable.outcome == 'success'
+        continue-on-error: true
         shell: pwsh
-        run: '& "${{ github.workspace }}\.github\ffmpeg-build\package-success.ps1" -Variant stable'
+        run: |
+          try {
+            & "${{ github.workspace }}\.github\ffmpeg-build\package-success.ps1" -Variant stable
+          } catch {
+            $_ | Format-List * -Force | Out-File "$env:DIAG_ROOT\SUMMARY-package-stable.txt" -Encoding UTF8
+            throw
+          }
 
       - name: Upload stable checkpoint before master
-        if: steps.stable.outcome == 'success'
-        uses: actions/upload-artifact@v4
+        id: stable_checkpoint
+        if: steps.stable.outcome == 'success' && steps.stable_package.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ffmpeg-stable-windows-x64-${{ github.run_id }}
           path: ffmpeg-output/stable/**
@@ -82,8 +86,8 @@ jobs:
           compression-level: 0
 
       - name: Preserve compiled stable binaries after validation failure
-        if: always() && steps.stable.outcome != 'success'
-        uses: actions/upload-artifact@v4
+        if: always() && (steps.stable.outcome != 'success' || steps.stable_package.outcome != 'success' || steps.stable_checkpoint.outcome != 'success')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ffmpeg-stable-unverified-windows-x64-${{ github.run_id }}
           path: ffmpeg-output/stable/**
@@ -93,7 +97,7 @@ jobs:
 
       - name: Build master with one thread
         id: master
-        if: steps.stable.outcome == 'success'
+        if: steps.stable.outcome == 'success' && steps.stable_package.outcome == 'success' && steps.stable_checkpoint.outcome == 'success'
         continue-on-error: true
         shell: pwsh
         run: |
@@ -102,13 +106,23 @@ jobs:
           exit $LASTEXITCODE
 
       - name: Prepare stable and master artifact
+        id: final_package
         if: steps.stable.outcome == 'success' && steps.master.outcome == 'success'
+        continue-on-error: true
         shell: pwsh
-        run: '& "${{ github.workspace }}\.github\ffmpeg-build\package-success.ps1" -Variant all'
+        run: |
+          try {
+            & "${{ github.workspace }}\.github\ffmpeg-build\package-success.ps1" -Variant all
+          } catch {
+            $_ | Format-List * -Force | Out-File "$env:DIAG_ROOT\SUMMARY-package-all.txt" -Encoding UTF8
+            throw
+          }
 
       - name: Upload stable and master directly
-        if: steps.stable.outcome == 'success' && steps.master.outcome == 'success'
-        uses: actions/upload-artifact@v4
+        id: final_upload
+        if: steps.stable.outcome == 'success' && steps.master.outcome == 'success' && steps.final_package.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ffmpeg-custom-windows-x64-${{ github.run_id }}
           path: ffmpeg-output/**
@@ -117,8 +131,8 @@ jobs:
           compression-level: 0
 
       - name: Preserve compiled master binaries after validation failure
-        if: always() && steps.stable.outcome == 'success' && steps.master.outcome != 'success'
-        uses: actions/upload-artifact@v4
+        if: always() && steps.stable.outcome == 'success' && (steps.master.outcome != 'success' || steps.final_package.outcome != 'success' || steps.final_upload.outcome != 'success')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ffmpeg-master-unverified-windows-x64-${{ github.run_id }}
           path: ffmpeg-output/master/**
@@ -127,13 +141,13 @@ jobs:
           compression-level: 0
 
       - name: Collect direct diagnostics
-        if: always() && (steps.stable.outcome != 'success' || steps.master.outcome != 'success')
+        if: always() && !(steps.stable.outcome == 'success' && steps.stable_package.outcome == 'success' && steps.stable_checkpoint.outcome == 'success' && steps.master.outcome == 'success' && steps.final_package.outcome == 'success' && steps.final_upload.outcome == 'success')
         shell: pwsh
         run: '& "${{ github.workspace }}\.github\ffmpeg-build\package-diagnostics.ps1"'
 
       - name: Upload diagnostics without an inner ZIP
-        if: always() && (steps.stable.outcome != 'success' || steps.master.outcome != 'success')
-        uses: actions/upload-artifact@v4
+        if: always() && !(steps.stable.outcome == 'success' && steps.stable_package.outcome == 'success' && steps.stable_checkpoint.outcome == 'success' && steps.master.outcome == 'success' && steps.final_package.outcome == 'success' && steps.final_upload.outcome == 'success')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ffmpeg-build-diagnostics-${{ github.run_id }}
           path: ffmpeg-diagnostics/**
@@ -142,6 +156,6 @@ jobs:
           compression-level: 0
 
       - name: Mark failed build as failed
-        if: always() && (steps.stable.outcome != 'success' || steps.master.outcome != 'success')
+        if: always() && !(steps.stable.outcome == 'success' && steps.stable_package.outcome == 'success' && steps.stable_checkpoint.outcome == 'success' && steps.master.outcome == 'success' && steps.final_package.outcome == 'success' && steps.final_upload.outcome == 'success')
         shell: pwsh
-        run: throw 'The FFmpeg build failed. Download diagnostics; any compiled stable or master binaries were uploaded separately as an unverified checkpoint.'
+        run: throw 'The FFmpeg build, validation, packaging, or artifact checkpoint failed. Download diagnostics; any compiled stable or master binaries were uploaded separately when available.'

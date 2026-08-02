@@ -1,7 +1,7 @@
 CUSTOM WINDOWS FFMPEG BUILD
 ===========================
 
-Run the workflow named "Build Custom FFmpeg 16" manually from GitHub Actions.
+Run the workflow named "Build Custom FFmpeg 17" manually from GitHub Actions.
 
 SUCCESS
 -------
@@ -52,6 +52,8 @@ BUILD POLICY
 * A stale non-zero MABS exit code is not trusted by itself; newly produced binaries
   and their timestamps determine whether compilation actually succeeded.
 * Static-only selected runtime dependencies; no bundled codec DLLs.
+* Windows API-set contract imports are recognized as operating-system dependencies
+  even when their virtual DLL names do not exist as files in System32.
 * Aggressive i7-14700KF tuning: -O3 and Raptor Lake target.
 * RTX 4070 Super paths: NVENC, NVDEC, CUDA headers, D3D11VA, D3D12VA,
   Vulkan and libplacebo. Intel QSV and AMD AMF are excluded.

@@ -20,7 +20,7 @@ foreach ($folder in $folders) {
     }
     $dlls = @(Get-ChildItem -LiteralPath $path -Recurse -File -Filter *.dll -ErrorAction SilentlyContinue)
     if ($dlls.Count -gt 0) { throw "$folder contains forbidden DLL files: $($dlls.Name -join ', ')" }
-    foreach ($report in 'source-identity.txt','build-info.txt','ffprobe-version.txt','ffplay-version.txt','pe-headers.txt','pe-dependencies.txt','encoders.txt','decoders.txt','filters.txt','devices.txt','protocols.txt','hwaccels.txt','muxers.txt','demuxers.txt','verify-nvidia.cmd') {
+    foreach ($report in 'source-identity.txt','recovery-stage.txt','build-info.txt','ffprobe-version.txt','ffplay-version.txt','pe-headers.txt','pe-dependencies.txt','cpu-smoke-test.txt','encoders.txt','decoders.txt','filters.txt','devices.txt','protocols.txt','hwaccels.txt','muxers.txt','demuxers.txt','verify-nvidia.cmd') {
         if (-not (Test-Path -LiteralPath (Join-Path $path $report) -PathType Leaf)) {
             throw "$folder is missing validator report $report."
         }

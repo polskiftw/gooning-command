@@ -1,5 +1,5 @@
-name: Build Custom FFmpeg 12
-run-name: Build Custom FFmpeg 12
+name: Build Custom FFmpeg 13
+run-name: Build Custom FFmpeg 13
 
 on:
   workflow_dispatch:
@@ -29,6 +29,10 @@ jobs:
       - name: Handle successful MABS build with stale exit code
         shell: pwsh
         run: '& "${{ github.workspace }}\.github\ffmpeg-build\patch-mabs-exit-code.ps1"'
+
+      - name: Correct FFmpeg feature validation names
+        shell: pwsh
+        run: '& "${{ github.workspace }}\.github\ffmpeg-build\patch-feature-validation.ps1"'
 
       - name: Validate PowerShell build scripts
         shell: pwsh
@@ -77,6 +81,16 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
+      - name: Preserve compiled stable binaries after validation failure
+        if: always() && steps.stable.outcome != 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-stable-unverified-windows-x64-${{ github.run_id }}
+          path: ffmpeg-output/stable/**
+          retention-days: 1
+          if-no-files-found: ignore
+          compression-level: 0
+
       - name: Build master with one thread
         id: master
         if: steps.stable.outcome == 'success'
@@ -102,6 +116,16 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
+      - name: Preserve compiled master binaries after validation failure
+        if: always() && steps.stable.outcome == 'success' && steps.master.outcome != 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-master-unverified-windows-x64-${{ github.run_id }}
+          path: ffmpeg-output/master/**
+          retention-days: 1
+          if-no-files-found: ignore
+          compression-level: 0
+
       - name: Collect direct diagnostics
         if: always() && (steps.stable.outcome != 'success' || steps.master.outcome != 'success')
         shell: pwsh
@@ -120,4 +144,4 @@ jobs:
       - name: Mark failed build as failed
         if: always() && (steps.stable.outcome != 'success' || steps.master.outcome != 'success')
         shell: pwsh
-        run: throw 'The FFmpeg build failed. Download the diagnostics artifact; any completed stable checkpoint remains available.'
+        run: throw 'The FFmpeg build failed. Download diagnostics; any compiled stable or master binaries were uploaded separately as an unverified checkpoint.'

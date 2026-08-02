@@ -401,7 +401,174 @@ function Assert-Features([string]$Folder, [string]$Label) {
             Sort-Object -Unique
         $forbidden = $dependencyNames | Where-Object {
             $name = $_
-            ($name -notmatch '(?i)^(VULKAN-1|NVENCODEAPI64|NVCUVID|NVCUDA)\.dll$') -and
+            $isTargetDriverRuntime = $name -match '(?i)^(VULKAN-1|NVENCODEAPI64|NVCUVID|NVCUDA)\.dll
+        if ($forbidden) { throw "$Label has non-system DLL dependencies:`n$($forbidden -join "`n")" }
+    }
+}
+
+function Write-LocalValidation([string]$Folder) {
+    $cmd = @'
+@echo off
+setlocal
+cd /d "%~dp0"
+echo === FFmpeg version ===
+ffmpeg.exe -version || goto :fail
+echo.
+echo === NVIDIA encoders ===
+ffmpeg.exe -hide_banner -encoders | findstr /i "nvenc" || goto :fail
+echo.
+echo === Hardware accelerators ===
+ffmpeg.exe -hide_banner -hwaccels || goto :fail
+echo.
+echo === CUDA/NVENC test ===
+ffmpeg.exe -hide_banner -f lavfi -i testsrc2=size=1280x720:rate=30 -t 2 -c:v h264_nvenc -y "%TEMP%\ffmpeg-nvenc-test.mp4" || goto :fail
+ffprobe.exe -v error -show_streams "%TEMP%\ffmpeg-nvenc-test.mp4" || goto :fail
+del /q "%TEMP%\ffmpeg-nvenc-test.mp4" 2>nul
+echo.
+echo ALL LOCAL HARDWARE TESTS PASSED.
+pause
+exit /b 0
+:fail
+echo.
+echo A TEST FAILED. Save this window or rerun from Command Prompt and send the output.
+pause
+exit /b 1
+'@
+    Set-Content -Path (Join-Path $Folder 'verify-nvidia.cmd') -Value $cmd -Encoding ASCII
+}
+
+try {
+    Write-Stage "Record $Variant environment"
+    Get-ComputerInfo | Out-File (Join-Path $metaRoot "environment-$Variant.txt") -Encoding UTF8
+    Write-SafeEnvironment -Path (Join-Path $metaRoot "environment-variables-$Variant.txt")
+
+    if ($ReuseSuite) {
+        if (-not (Test-Path (Join-Path $suiteRoot 'media-autobuild_suite.bat'))) {
+            throw 'The reusable MABS workspace is missing.'
+        }
+    } else {
+        if (Test-Path $suiteRoot) { Remove-Item $suiteRoot -Recurse -Force }
+        Invoke-Logged 'Clone media-autobuild_suite fresh' { git clone --depth 1 https://github.com/m-ab-s/media-autobuild_suite.git $suiteRoot }
+        Copy-Item (Join-Path $repoRoot '.github\ffmpeg-build\README.txt') $diagRoot -Force
+    }
+
+    Patch-MabsLibvpxIncludePath
+
+    $versionsPath = Join-Path $metaRoot 'resolved-versions.txt'
+    if ($Variant -eq 'stable') {
+        $stableTag = Resolve-LatestStableTag
+        Set-Content -Path $versionsPath -Value "stable=$stableTag`nmaster=HEAD at build time" -Encoding UTF8
+        $folder = Run-Mabs -Label 'stable' -FfmpegPath "https://github.com/FFmpeg/FFmpeg.git#tag=$stableTag"
+    } else {
+        if (-not (Test-Path $versionsPath)) {
+            Set-Content -Path $versionsPath -Value "stable=not built`nmaster=HEAD at build time" -Encoding UTF8
+        }
+        $folder = Run-Mabs -Label 'master' -FfmpegPath 'https://github.com/FFmpeg/FFmpeg.git#branch=master'
+    }
+
+    Assert-Features -Folder $folder -Label $Variant
+    Write-LocalValidation -Folder $folder
+    Write-SourceCommits
+    Copy-Item $versionsPath $outRoot -Force
+    Copy-Item (Join-Path $metaRoot 'source-commits.txt') $outRoot -Force
+    Copy-Item (Join-Path $repoRoot '.github\ffmpeg-build\README.txt') $outRoot -Force
+    Remove-Item (Join-Path $diagRoot 'failed-step.txt') -Force -ErrorAction SilentlyContinue
+    Stop-Transcript | Out-Null
+    exit 0
+}
+catch {
+    $_ | Format-List * -Force | Out-File (Join-Path $diagRoot "SUMMARY-$Variant.txt") -Encoding UTF8
+    Write-Error $_
+    try { Stop-Transcript | Out-Null } catch {}
+    exit 1
+}
+
+            # Windows API-set contracts are loader aliases, not ordinary files that
+            # must exist in System32. MinGW/UCRT binaries legitimately import them.
+            $isWindowsApiSet = $name -match '(?i)^(API|EXT)-MS-(WIN|ONECORE)-[A-Z0-9._-]+\.dll
+        if ($forbidden) { throw "$Label has non-system DLL dependencies:`n$($forbidden -join "`n")" }
+    }
+}
+
+function Write-LocalValidation([string]$Folder) {
+    $cmd = @'
+@echo off
+setlocal
+cd /d "%~dp0"
+echo === FFmpeg version ===
+ffmpeg.exe -version || goto :fail
+echo.
+echo === NVIDIA encoders ===
+ffmpeg.exe -hide_banner -encoders | findstr /i "nvenc" || goto :fail
+echo.
+echo === Hardware accelerators ===
+ffmpeg.exe -hide_banner -hwaccels || goto :fail
+echo.
+echo === CUDA/NVENC test ===
+ffmpeg.exe -hide_banner -f lavfi -i testsrc2=size=1280x720:rate=30 -t 2 -c:v h264_nvenc -y "%TEMP%\ffmpeg-nvenc-test.mp4" || goto :fail
+ffprobe.exe -v error -show_streams "%TEMP%\ffmpeg-nvenc-test.mp4" || goto :fail
+del /q "%TEMP%\ffmpeg-nvenc-test.mp4" 2>nul
+echo.
+echo ALL LOCAL HARDWARE TESTS PASSED.
+pause
+exit /b 0
+:fail
+echo.
+echo A TEST FAILED. Save this window or rerun from Command Prompt and send the output.
+pause
+exit /b 1
+'@
+    Set-Content -Path (Join-Path $Folder 'verify-nvidia.cmd') -Value $cmd -Encoding ASCII
+}
+
+try {
+    Write-Stage "Record $Variant environment"
+    Get-ComputerInfo | Out-File (Join-Path $metaRoot "environment-$Variant.txt") -Encoding UTF8
+    Write-SafeEnvironment -Path (Join-Path $metaRoot "environment-variables-$Variant.txt")
+
+    if ($ReuseSuite) {
+        if (-not (Test-Path (Join-Path $suiteRoot 'media-autobuild_suite.bat'))) {
+            throw 'The reusable MABS workspace is missing.'
+        }
+    } else {
+        if (Test-Path $suiteRoot) { Remove-Item $suiteRoot -Recurse -Force }
+        Invoke-Logged 'Clone media-autobuild_suite fresh' { git clone --depth 1 https://github.com/m-ab-s/media-autobuild_suite.git $suiteRoot }
+        Copy-Item (Join-Path $repoRoot '.github\ffmpeg-build\README.txt') $diagRoot -Force
+    }
+
+    Patch-MabsLibvpxIncludePath
+
+    $versionsPath = Join-Path $metaRoot 'resolved-versions.txt'
+    if ($Variant -eq 'stable') {
+        $stableTag = Resolve-LatestStableTag
+        Set-Content -Path $versionsPath -Value "stable=$stableTag`nmaster=HEAD at build time" -Encoding UTF8
+        $folder = Run-Mabs -Label 'stable' -FfmpegPath "https://github.com/FFmpeg/FFmpeg.git#tag=$stableTag"
+    } else {
+        if (-not (Test-Path $versionsPath)) {
+            Set-Content -Path $versionsPath -Value "stable=not built`nmaster=HEAD at build time" -Encoding UTF8
+        }
+        $folder = Run-Mabs -Label 'master' -FfmpegPath 'https://github.com/FFmpeg/FFmpeg.git#branch=master'
+    }
+
+    Assert-Features -Folder $folder -Label $Variant
+    Write-LocalValidation -Folder $folder
+    Write-SourceCommits
+    Copy-Item $versionsPath $outRoot -Force
+    Copy-Item (Join-Path $metaRoot 'source-commits.txt') $outRoot -Force
+    Copy-Item (Join-Path $repoRoot '.github\ffmpeg-build\README.txt') $outRoot -Force
+    Remove-Item (Join-Path $diagRoot 'failed-step.txt') -Force -ErrorAction SilentlyContinue
+    Stop-Transcript | Out-Null
+    exit 0
+}
+catch {
+    $_ | Format-List * -Force | Out-File (Join-Path $diagRoot "SUMMARY-$Variant.txt") -Encoding UTF8
+    Write-Error $_
+    try { Stop-Transcript | Out-Null } catch {}
+    exit 1
+}
+
+            (-not $isTargetDriverRuntime) -and
+                (-not $isWindowsApiSet) -and
                 (-not (Test-Path -LiteralPath (Join-Path ([Environment]::SystemDirectory) $name) -PathType Leaf))
         }
         if ($forbidden) { throw "$Label has non-system DLL dependencies:`n$($forbidden -join "`n")" }

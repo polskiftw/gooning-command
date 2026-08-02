@@ -1,5 +1,5 @@
-name: Build Custom FFmpeg 18
-run-name: Build Custom FFmpeg 18
+name: Build Custom FFmpeg 19
+run-name: Build Custom FFmpeg 19
 
 on:
   workflow_dispatch:
@@ -10,6 +10,8 @@ permissions:
 concurrency:
   group: custom-ffmpeg-build
   cancel-in-progress: false
+  # GitHub added queue:max before actionlint 1.7.12 learned the key.
+  queue: max
 
 env:
   BUILD_ROOT: C:\ffb
@@ -81,7 +83,7 @@ jobs:
         with:
           name: ffmpeg-stable-windows-x64-${{ github.run_id }}
           path: ffmpeg-output/stable/**
-          retention-days: 1
+          retention-days: 7
           if-no-files-found: error
           compression-level: 0
 
@@ -91,7 +93,7 @@ jobs:
         with:
           name: ffmpeg-stable-unverified-windows-x64-${{ github.run_id }}
           path: ffmpeg-output/stable/**
-          retention-days: 1
+          retention-days: 7
           if-no-files-found: ignore
           compression-level: 0
 
@@ -126,7 +128,7 @@ jobs:
         with:
           name: ffmpeg-custom-windows-x64-${{ github.run_id }}
           path: ffmpeg-output/**
-          retention-days: 1
+          retention-days: 7
           if-no-files-found: error
           compression-level: 0
 
@@ -136,7 +138,7 @@ jobs:
         with:
           name: ffmpeg-master-unverified-windows-x64-${{ github.run_id }}
           path: ffmpeg-output/master/**
-          retention-days: 1
+          retention-days: 7
           if-no-files-found: ignore
           compression-level: 0
 
@@ -151,7 +153,7 @@ jobs:
         with:
           name: ffmpeg-build-diagnostics-${{ github.run_id }}
           path: ffmpeg-diagnostics/**
-          retention-days: 1
+          retention-days: 7
           if-no-files-found: error
           compression-level: 0
 

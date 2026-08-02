@@ -229,6 +229,7 @@ function Write-FfmpegOptions {
 --disable-libdc1394
 --disable-indev=dshow
 --disable-indev=gdigrab
+--disable-indev=vfwcap
 --disable-outdev=sdl
 --enable-network
 --disable-protocols
@@ -474,12 +475,38 @@ function Run-Mabs(
 
     $binDir = Join-Path $suiteRoot 'local64\bin-video'
     $requiredExecutables = @('ffmpeg.exe','ffprobe.exe','ffplay.exe')
+    $target = Join-Path $outRoot $Label
+    Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path $target | Out-Null
     foreach ($name in $requiredExecutables) {
         Remove-Item -LiteralPath (Join-Path $binDir $name) -Force -ErrorAction SilentlyContinue
     }
     $buildStartedUtc = [datetime]::UtcNow
 
     $mabsExitCode = Invoke-Logged "Build $Label" { cmd.exe /d /c "cd /d $suiteRoot && media-autobuild_suite.bat" } -AllowNonZeroExit
+
+    # The old executables were deleted before MABS started, so anything present now
+    # was produced by this invocation. Stage every available binary immediately,
+    # before trusting the log marker, patch checks, options file, source checkout, or
+    # any feature validator. A validator bug must never destroy a four-hour build.
+    $recovered = [System.Collections.Generic.List[string]]::new()
+    foreach ($name in $requiredExecutables) {
+        $source = Join-Path $binDir $name
+        if (Test-Path -LiteralPath $source -PathType Leaf) {
+            Copy-Item -LiteralPath $source -Destination (Join-Path $target $name) -Force
+            $item = Get-Item -LiteralPath $source
+            $recovered.Add("$name`t$($item.Length)`t$($item.LastWriteTimeUtc.ToString('o'))")
+        }
+    }
+    Set-Content -LiteralPath (Join-Path $target 'recovery-stage.txt') -Value @(
+        "label=$Label"
+        "mabs_exit_code=$mabsExitCode"
+        "build_started_utc=$($buildStartedUtc.ToString('o'))"
+        "staged_utc=$([datetime]::UtcNow.ToString('o'))"
+        'name size_bytes source_last_write_utc'
+        $recovered
+    ) -Encoding UTF8
+
     $mabsLog = Get-LogPath "Build $Label"
     if (-not (Test-Path -LiteralPath $mabsLog -PathType Leaf)) {
         throw "The $Label MABS log is missing."
@@ -514,14 +541,6 @@ function Run-Mabs(
     }
 
     $sourceCommit = Assert-SourceIdentity -Label $Label -ExpectedStableTag $ExpectedStableTag -ExpectedStableCommit $ExpectedStableCommit -ExpectedMasterCommit $ExpectedMasterCommit
-
-    $target = Join-Path $outRoot $Label
-    Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
-    New-Item -ItemType Directory -Force -Path $target | Out-Null
-    foreach ($name in $requiredExecutables) {
-        $source = Join-Path $binDir $name
-        Copy-Item -LiteralPath $source -Destination $target -Force
-    }
     Copy-Item -LiteralPath (Join-Path $metaRoot "ffmpeg-source-$Label.txt") -Destination (Join-Path $target 'source-identity.txt') -Force
     return [PSCustomObject]@{ Folder = $target; SourceCommit = $sourceCommit }
 }
@@ -534,6 +553,7 @@ function Assert-Features(
 ) {
     Write-Stage "Validate $Label features"
     $ffmpeg = Join-Path $Folder 'ffmpeg.exe'
+    $reports = @{}
     $checks = [ordered]@{
         encoders = @('libx264','libx265','libvpx-vp9','libsvtav1','libaom-av1','librav1e','h264_nvenc','hevc_nvenc','av1_nvenc','libfdk_aac','libopus','libmp3lame','libvorbis','libtheora','libwebp_anim')
         decoders = @('h264','hevc','av1','libdav1d','aac','opus','flac','ass','pgssub','dvdsub','libjxl')
@@ -551,6 +571,7 @@ function Assert-Features(
         if ($reportExitCode -ne 0) {
             throw "$Label feature report command '-$($entry.Key)' failed with exit code $reportExitCode."
         }
+        $reports[$entry.Key] = $text
         foreach ($required in $entry.Value) {
             $pattern = '(?m)^\s*(?:[A-Z\.]{1,8}\s+)?(?:[A-Za-z0-9_.-]+,)*' + [regex]::Escape($required) + '(?:,[A-Za-z0-9_.-]+)*(?:\s|$)'
             if ($text -notmatch $pattern) {
@@ -559,10 +580,42 @@ function Assert-Features(
         }
     }
 
+    # A configure line can claim that a component was disabled while the runtime
+    # tables still expose it. Check the concrete feature names for every disabled
+    # family that has an observable runtime representation.
+    $forbiddenFeatures = [ordered]@{
+        encoders = @('h264_amf','hevc_amf','av1_amf','h264_qsv','hevc_qsv','av1_qsv','mjpeg_qsv','mpeg2_qsv','vp9_qsv')
+        decoders = @('h264_qsv','hevc_qsv','av1_qsv','mjpeg_qsv','mpeg2_qsv','vc1_qsv','vp8_qsv','vp9_qsv','libaribb24')
+        filters = @('avgblur_opencl','boxblur_opencl','colorkey_opencl','convolution_opencl','deshake_opencl','dilation_opencl','erosion_opencl','nlmeans_opencl','overlay_opencl','pad_opencl','program_opencl','remap_opencl','roberts_opencl','sobel_opencl','tonemap_opencl','transpose_opencl','unsharp_opencl','xfade_opencl','frei0r','frei0r_src','ocr')
+        devices = @('openal','decklink','libdc1394','dshow','gdigrab','vfwcap','sdl','sdl2')
+        protocols = @('rist','srt','rtmp','rtmpe','rtmps','rtmpt','rtmpte','rtmpts','ssh','zmq')
+        hwaccels = @('dxva2','qsv')
+        demuxers = @('avisynth','vapoursynth')
+    }
+    foreach ($entry in $forbiddenFeatures.GetEnumerator()) {
+        foreach ($forbiddenName in $entry.Value) {
+            $pattern = '(?m)^\s*(?:[A-Z\.]{1,8}\s+)?(?:[A-Za-z0-9_.-]+,)*' + [regex]::Escape($forbiddenName) + '(?:,[A-Za-z0-9_.-]+)*(?:\s|$)'
+            if ($reports[$entry.Key] -match $pattern) {
+                throw "$Label unexpectedly exposes disabled $($entry.Key) feature: $forbiddenName"
+            }
+        }
+    }
+    $forbiddenRuntimeFamilies = [ordered]@{
+        encoders = '(?im)^\s*[A-Z\.]{1,8}\s+[A-Za-z0-9_.-]+_(?:amf|qsv)(?:\s|$)'
+        decoders = '(?im)^\s*[A-Z\.]{1,8}\s+[A-Za-z0-9_.-]+_qsv(?:\s|$)'
+        filters = '(?im)^\s*[A-Z\.]{1,8}\s+[A-Za-z0-9_.-]*(?:opencl|_qsv|_npp)[A-Za-z0-9_.-]*(?:\s|$)'
+    }
+    foreach ($entry in $forbiddenRuntimeFamilies.GetEnumerator()) {
+        if ($reports[$entry.Key] -match $entry.Value) {
+            throw "$Label exposes a disabled runtime feature family in $($entry.Key): $($Matches[0].Trim())"
+        }
+    }
+
     $version = & $ffmpeg -version 2>&1 | Out-String
     $versionExitCode = $LASTEXITCODE
     Set-Content -Path (Join-Path $Folder 'build-info.txt') -Value $version -Encoding UTF8
     if ($versionExitCode -ne 0) { throw "$Label ffmpeg.exe -version failed with exit code $versionExitCode." }
+    $toolVersions = [ordered]@{ 'ffmpeg.exe' = $version }
     foreach ($name in 'ffprobe.exe','ffplay.exe') {
         $tool = Join-Path $Folder $name
         $toolVersion = & $tool -version 2>&1 | Out-String
@@ -571,6 +624,7 @@ function Assert-Features(
         if ($toolExitCode -ne 0 -or $toolVersion -notmatch '(?im)^ff(?:probe|play) version\s+') {
             throw "$Label $name did not return a valid version report (exit code $toolExitCode)."
         }
+        $toolVersions[$name] = $toolVersion
     }
 
     $expectedOptions = @(Get-Content -LiteralPath (Join-Path $suiteRoot 'build\ffmpeg_options.txt') |
@@ -585,11 +639,17 @@ function Assert-Features(
         throw "$Label was configured with shared FFmpeg libraries."
     }
     $stableVersion = $StableTag.TrimStart('n')
-    if ($Label -eq 'stable' -and $version -notmatch ('(?im)^ffmpeg version\s+n?' + [regex]::Escape($stableVersion) + '(?:[-\s]|$)')) {
-        throw "Stable binary does not identify itself as resolved tag $StableTag."
-    }
-    if ($Label -eq 'master' -and $version -notmatch ('(?i)' + [regex]::Escape($SourceCommit.Substring(0, 7)))) {
-        throw "Master binary version does not contain its validated source commit prefix $($SourceCommit.Substring(0, 7))."
+    foreach ($toolEntry in $toolVersions.GetEnumerator()) {
+        $toolBase = [IO.Path]::GetFileNameWithoutExtension($toolEntry.Key)
+        if ($toolEntry.Value -notmatch ('(?im)^' + [regex]::Escape($toolBase) + ' version\s+')) {
+            throw "$Label $($toolEntry.Key) has a version report for the wrong executable."
+        }
+        if ($Label -eq 'stable' -and $toolEntry.Value -notmatch ('(?im)^' + [regex]::Escape($toolBase) + ' version\s+n?' + [regex]::Escape($stableVersion) + '(?:[-\s]|$)')) {
+            throw "Stable $($toolEntry.Key) does not identify itself as resolved tag $StableTag."
+        }
+        if ($Label -eq 'master' -and $toolEntry.Value -notmatch ('(?i)' + [regex]::Escape($SourceCommit.Substring(0, 7)))) {
+            throw "Master $($toolEntry.Key) version does not contain validated source commit prefix $($SourceCommit.Substring(0, 7))."
+        }
     }
 
     $sidecarDlls = @(Get-ChildItem -LiteralPath $Folder -Recurse -File -Filter *.dll -ErrorAction SilentlyContinue)
@@ -619,6 +679,20 @@ function Assert-Features(
     if ($apiSetContracts.Count -eq 0) {
         throw 'Windows API-set schema could not be parsed; refusing to guess which virtual DLL imports are valid.'
     }
+    # This is intentionally an explicit allowlist, not "anything found in System32".
+    # It is the complete ordinary Windows import set observed across the audited
+    # ffmpeg/ffprobe/ffplay binaries. A newly introduced OS dependency must be
+    # reviewed and added deliberately instead of passing merely because it exists.
+    $allowedWindowsDlls = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    @(
+        'ADVAPI32.dll','bcrypt.dll','CFGMGR32.dll','CRYPT32.dll',
+        'GDI32.dll','IMM32.dll','KERNEL32.dll','ntdll.dll','ole32.dll','OLEAUT32.dll',
+        'SETUPAPI.dll','SHELL32.dll','SHLWAPI.dll','USER32.dll','VERSION.dll',
+        'WINMM.dll','WS2_32.dll'
+    ) | ForEach-Object { [void]$allowedWindowsDlls.Add($_) }
+    $allowedDriverDlls = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    @('VULKAN-1.dll','NVENCODEAPI64.dll','NVCUVID.dll','NVCUDA.dll') |
+        ForEach-Object { [void]$allowedDriverDlls.Add($_) }
 
     Set-Content -Path (Join-Path $Folder 'pe-dependencies.txt') -Value "dumpbin=$dumpbinPath" -Encoding UTF8
     foreach ($exe in Get-ChildItem $Folder -Filter *.exe) {
@@ -630,6 +704,9 @@ function Assert-Features(
         }
         if ($headers -notmatch '(?im)^\s*8664 machine \(x64\)\s*$') {
             throw "$Label $($exe.Name) is not an AMD64 PE32+ executable."
+        }
+        if ($headers -notmatch '(?im)^\s*20B\s+magic\s+#\s+\(PE32\+\)\s*$') {
+            throw "$Label $($exe.Name) is AMD64 but does not have the PE32+ optional-header magic."
         }
 
         $deps = & $dumpbinPath /dependents $exe.FullName 2>&1 | Out-String
@@ -646,7 +723,7 @@ function Assert-Features(
         }
         $forbidden = $dependencyNames | Where-Object {
             $name = $_
-            $isTargetDriverRuntime = $name -match '(?i)^(VULKAN-1|NVENCODEAPI64|NVCUVID|NVCUDA)\.dll$'
+            $isTargetDriverRuntime = $allowedDriverDlls.Contains($name)
             # API-set aliases have a rigid canonical version suffix. This accepts
             # Windows loader contracts without turning every api-ms-win-* string
             # into a blanket third-party-DLL bypass.
@@ -655,9 +732,60 @@ function Assert-Features(
                 $apiSetContracts.Contains(([IO.Path]::GetFileNameWithoutExtension($name)))
             (-not $isTargetDriverRuntime) -and
                 (-not $isWindowsApiSet) -and
-                (-not (Test-Path -LiteralPath (Join-Path ([Environment]::SystemDirectory) $name) -PathType Leaf))
+                (-not ($allowedWindowsDlls.Contains($name) -and
+                    (Test-Path -LiteralPath (Join-Path ([Environment]::SystemDirectory) $name) -PathType Leaf)))
         }
         if ($forbidden) { throw "$Label has non-system DLL dependencies:`n$($forbidden -join "`n")" }
+    }
+}
+
+function Assert-CpuSmokeTest([string]$Folder, [string]$Label) {
+    Write-Stage "Run $Label CPU encode, mux, probe, and decode smoke test"
+    $ffmpeg = Join-Path $Folder 'ffmpeg.exe'
+    $ffprobe = Join-Path $Folder 'ffprobe.exe'
+    $smokePath = Join-Path $Folder '_validator-smoke.mp4'
+    $reportPath = Join-Path $Folder 'cpu-smoke-test.txt'
+    Remove-Item -LiteralPath $smokePath -Force -ErrorAction SilentlyContinue
+
+    try {
+        $encodeOutput = & $ffmpeg -hide_banner -loglevel warning `
+            -f lavfi -i 'testsrc2=size=320x240:rate=10' `
+            -f lavfi -i 'sine=frequency=1000:sample_rate=48000' `
+            -t 1 -vf 'scale=160:120,format=yuv420p' `
+            -c:v libx264 -preset ultrafast -c:a libfdk_aac `
+            -movflags '+faststart' -y $smokePath 2>&1 | Out-String
+        $encodeExitCode = $LASTEXITCODE
+        Set-Content -LiteralPath $reportPath -Value "[encode exit=$encodeExitCode]`n$encodeOutput" -Encoding UTF8
+        if ($encodeExitCode -ne 0 -or -not (Test-Path -LiteralPath $smokePath -PathType Leaf)) {
+            throw "$Label CPU smoke encode/mux failed with exit code $encodeExitCode."
+        }
+        if ((Get-Item -LiteralPath $smokePath).Length -lt 1024) {
+            throw "$Label CPU smoke output is implausibly small."
+        }
+
+        $probeOutput = & $ffprobe -v error -show_entries 'stream=index,codec_type,codec_name,width,height' -of json $smokePath 2>&1 | Out-String
+        $probeExitCode = $LASTEXITCODE
+        Add-Content -LiteralPath $reportPath -Value "`n[probe exit=$probeExitCode]`n$probeOutput" -Encoding UTF8
+        if ($probeExitCode -ne 0) { throw "$Label CPU smoke probe failed with exit code $probeExitCode." }
+        try { $probe = $probeOutput | ConvertFrom-Json } catch { throw "$Label CPU smoke probe did not return valid JSON." }
+        $video = @($probe.streams | Where-Object codec_type -eq 'video')
+        $audio = @($probe.streams | Where-Object codec_type -eq 'audio')
+        if ($video.Count -ne 1 -or $video[0].codec_name -ne 'h264' -or $video[0].width -ne 160 -or $video[0].height -ne 120) {
+            throw "$Label CPU smoke probe did not confirm the expected H.264 160x120 video stream."
+        }
+        if ($audio.Count -ne 1 -or $audio[0].codec_name -ne 'aac') {
+            throw "$Label CPU smoke probe did not confirm the expected AAC audio stream."
+        }
+
+        $decodeOutput = & $ffmpeg -hide_banner -loglevel warning -i $smokePath `
+            -map '0:v:0' -map '0:a:0' -f null NUL 2>&1 | Out-String
+        $decodeExitCode = $LASTEXITCODE
+        Add-Content -LiteralPath $reportPath -Value "`n[decode exit=$decodeExitCode]`n$decodeOutput" -Encoding UTF8
+        if ($decodeExitCode -ne 0) { throw "$Label CPU smoke decode failed with exit code $decodeExitCode." }
+        Add-Content -LiteralPath $reportPath -Value "`nCPU_SMOKE_TEST_PASSED" -Encoding UTF8
+    }
+    finally {
+        Remove-Item -LiteralPath $smokePath -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -750,6 +878,7 @@ try {
     }
 
     Assert-Features -Folder $folder -Label $Variant -SourceCommit $sourceCommit -StableTag $(if ($Variant -eq 'stable') { $stableTag } else { '' })
+    Assert-CpuSmokeTest -Folder $folder -Label $Variant
     Write-LocalValidation -Folder $folder
     Write-SourceCommits
     Copy-Item $versionsPath $outRoot -Force

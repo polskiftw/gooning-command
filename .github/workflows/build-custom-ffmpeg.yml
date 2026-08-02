@@ -1,5 +1,5 @@
-name: Build Custom FFmpeg 19
-run-name: Build Custom FFmpeg 19
+name: Build Custom FFmpeg 20
+run-name: Build Custom FFmpeg 20
 
 on:
   workflow_dispatch:

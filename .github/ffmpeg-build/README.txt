@@ -1,7 +1,7 @@
 CUSTOM WINDOWS FFMPEG BUILD
 ===========================
 
-Run the workflow named "Build Custom FFmpeg 18" manually from GitHub Actions.
+Run the workflow named "Build Custom FFmpeg 19" manually from GitHub Actions.
 
 SUCCESS
 -------
@@ -21,8 +21,10 @@ Each folder contains:
   ffprobe.exe
   ffplay.exe
   source-identity.txt
+  recovery-stage.txt
   build-info.txt
   feature reports
+  cpu-smoke-test.txt
   SHA256SUMS.txt
   verify-nvidia.cmd
 
@@ -55,6 +57,8 @@ BUILD POLICY
 * Stable FFmpeg release tags are resolved through Git, not the GitHub REST API.
 * MABS output streams live and is also logged. A non-zero exit code is forgiven only
   when MABS printed its success marker and all three executables were freshly linked.
+* Every executable produced by MABS is copied into the recovery artifact area before
+  any marker, source-identity, feature, dependency, or smoke-test validation runs.
 * The checked-in build script is the script that runs. No workflow-time scripts patch
   or reconstruct the validator.
 * Static-only selected runtime dependencies; no bundled codec DLLs.
@@ -69,8 +73,11 @@ BUILD POLICY
   broad network transports, AviSynth, VapourSynth, frei0r and OpenCL are excluded.
 * The build fails rather than silently dropping a required feature or replacing a
   selected source dependency with an unexplained prebuilt runtime library.
-* Every executable must be PE32+ AMD64, pass dumpbin inspection, identify the intended
-  FFmpeg source revision, and expose every explicitly requested configure option.
+* Every executable must be PE32+ AMD64, pass dumpbin inspection, and identify the
+  intended FFmpeg source revision. FFmpeg must report every requested configure option.
+* CI performs a CPU-only H.264/AAC encode, MP4 mux, FFprobe inspection, and complete
+  audio/video decode before a build is accepted. NVIDIA execution remains a local test.
+* Successful and recovery artifacts are retained for seven days.
 
 MAINTENANCE RULE
 ----------------

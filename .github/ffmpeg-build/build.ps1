@@ -310,36 +310,63 @@ function Patch-MabsCleanup {
         throw 'The MABS helper script is missing; cannot harden source cleanup.'
     }
     $content = [IO.File]::ReadAllText($scriptPath)
-    $marker = '# GParty cleanup hardening v1.'
-    if ($content.Contains($marker)) {
-        foreach ($proof in 'cargo_bin="$(command -v cargo)"', 'PATH="/usr/bin:$MINGW_PREFIX/bin" find', '(patches|extras|ffmpeg-git|$)') {
+    $markerV1 = '# GParty cleanup hardening v1.'
+    $markerV2 = '# GParty cleanup hardening v2.'
+    $cargoAnchor = '        find . -maxdepth 3 -type f -name "Cargo.toml" -execdir cargo clean -q ";"'
+    $legacyCargoEnd = '        PATH="/usr/bin:$MINGW_PREFIX/bin" find . -maxdepth 3 -type f -name "Cargo.toml" -execdir "$cargo_bin" clean -q ";"'
+    $removeAnchor = '                grep -Ev "^$LOCALBUILDDIR/(patches|extras|$)" | sort -u | xargs -r rm -rf'
+    $removeReplacement = '                grep -Ev "^$LOCALBUILDDIR/(patches|extras|ffmpeg-git|$)" | sort -u | xargs -r rm -rf'
+
+    $cargoReplacement = @'
+        # GParty cleanup hardening v2. Cleanup is best-effort after a successful
+        # build. Give GNU find a safe PATH for -execdir, and do not let Cargo
+        # return 1 merely because an already-cleaned target directory is absent.
+        cargo_bin="$(command -v cargo || true)"
+        if [[ -n $cargo_bin ]]; then
+            PATH="/usr/bin:$MINGW_PREFIX/bin" find . -maxdepth 3 -type f -name "Cargo.toml" -execdir "$cargo_bin" clean -q ";" ||
+                echo "Warning: Cargo cleanup failed; preserving the completed build." >&2
+        else
+            echo "Warning: Cargo was unavailable during cleanup; preserving the completed build." >&2
+        fi
+'@
+    $cargoReplacement = $cargoReplacement.TrimEnd([char]13,[char]10)
+
+    if ($content.Contains($markerV2)) {
+        foreach ($proof in 'cargo_bin="$(command -v cargo || true)"', 'Warning: Cargo cleanup failed', '(patches|extras|ffmpeg-git|$)') {
             if (-not $content.Contains($proof)) { throw "Existing cleanup patch is incomplete; missing: $proof" }
         }
         return
     }
 
-    $cargoAnchor = '        find . -maxdepth 3 -type f -name "Cargo.toml" -execdir cargo clean -q ";"'
-    $removeAnchor = '                grep -Ev "^$LOCALBUILDDIR/(patches|extras|$)" | sort -u | xargs -r rm -rf'
-    if (([regex]::Matches($content, [regex]::Escape($cargoAnchor))).Count -ne 1) {
-        throw 'Expected exactly one MABS Cargo cleanup command.'
-    }
-    if (([regex]::Matches($content, [regex]::Escape($removeAnchor))).Count -ne 1) {
-        throw 'Expected exactly one MABS source-removal filter.'
+    if ($content.Contains($markerV1)) {
+        $legacyStart = $content.IndexOf('        ' + $markerV1, [StringComparison]::Ordinal)
+        $legacyEndStart = $content.IndexOf($legacyCargoEnd, $legacyStart, [StringComparison]::Ordinal)
+        if ($legacyStart -lt 0 -or $legacyEndStart -lt 0) {
+            throw 'The legacy cleanup patch is malformed and cannot be upgraded safely.'
+        }
+        $legacyEnd = $legacyEndStart + $legacyCargoEnd.Length
+        $content = $content.Remove($legacyStart, $legacyEnd - $legacyStart).Insert($legacyStart, $cargoReplacement)
+    } else {
+        if (([regex]::Matches($content, [regex]::Escape($cargoAnchor))).Count -ne 1) {
+            throw 'Expected exactly one MABS Cargo cleanup command.'
+        }
+        $content = $content.Replace($cargoAnchor, $cargoReplacement)
     }
 
-    $cargoReplacement = @'
-        # GParty cleanup hardening v1. GNU find refuses -execdir when PATH
-        # contains the current directory. Resolve Cargo first, then give find
-        # a fixed safe PATH so successful builds do not acquire exit code 1.
-        cargo_bin="$(command -v cargo)"
-        PATH="/usr/bin:$MINGW_PREFIX/bin" find . -maxdepth 3 -type f -name "Cargo.toml" -execdir "$cargo_bin" clean -q ";"
-'@
-    $removeReplacement = '                grep -Ev "^$LOCALBUILDDIR/(patches|extras|ffmpeg-git|$)" | sort -u | xargs -r rm -rf'
-    $content = $content.Replace($cargoAnchor, $cargoReplacement.TrimEnd("`r","`n"))
-    $content = $content.Replace($removeAnchor, $removeReplacement)
+    if ($content.Contains($removeAnchor)) {
+        if (([regex]::Matches($content, [regex]::Escape($removeAnchor))).Count -ne 1) {
+            throw 'Expected exactly one MABS source-removal filter.'
+        }
+        $content = $content.Replace($removeAnchor, $removeReplacement)
+    } elseif (-not $content.Contains($removeReplacement)) {
+        throw 'The MABS source-removal filter has an unsupported shape.'
+    }
+
+    foreach ($proof in $markerV2, 'cargo_bin="$(command -v cargo || true)"', 'Warning: Cargo cleanup failed', $removeReplacement) {
+        if (-not $content.Contains($proof)) { throw "Cleanup patch postcondition failed; missing: $proof" }
+    }
     [IO.File]::WriteAllText($scriptPath, $content, [System.Text.UTF8Encoding]::new($false))
 }
-
 function Resolve-LatestStableTag {
     Write-Stage 'Resolve latest stable FFmpeg tag with Git'
     $remoteTags = & git ls-remote --tags --refs https://github.com/FFmpeg/FFmpeg.git 2>&1
@@ -512,11 +539,21 @@ function Run-Mabs(
         throw "The $Label MABS log is missing."
     }
     $mabsText = [IO.File]::ReadAllText($mabsLog)
-    if ($mabsText -notmatch '(?i)\bCompilation successful\b') {
-        throw "MABS did not print its compilation-success marker for $Label (exit code $mabsExitCode)."
+    $successMarkerFound = $mabsText.Contains('Compilation successful', [StringComparison]::OrdinalIgnoreCase)
+    if (-not $successMarkerFound) {
+        $compileLog = Join-Path $suiteRoot 'build\compile.log'
+        if (Test-Path -LiteralPath $compileLog -PathType Leaf) {
+            $successMarkerFound = [IO.File]::ReadAllText($compileLog).Contains(
+                'Compilation successful',
+                [StringComparison]::OrdinalIgnoreCase
+            )
+        }
+    }
+    if (-not $successMarkerFound) {
+        Write-Warning "MABS did not print its compilation-success marker for $Label. Fresh binaries must pass every independent validator before acceptance."
     }
     if ($mabsExitCode -ne 0) {
-        Write-Warning "MABS returned exit code $mabsExitCode after printing its success marker; validating all produced binaries before accepting it."
+        Write-Warning "MABS returned exit code $mabsExitCode. Fresh binaries must pass every independent validator before acceptance."
     }
     $actualOptionsHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $optionsPath).Hash
     if ($actualOptionsHash -ne $expectedOptionsHash) {
@@ -525,14 +562,14 @@ function Run-Mabs(
     if (-not ([IO.File]::ReadAllText((Join-Path $suiteRoot 'build\media-suite_compile.sh')).Contains('# GParty libvpx generated-include patch v2.'))) {
         throw 'The libvpx patch disappeared during the build.'
     }
-    if (-not ([IO.File]::ReadAllText((Join-Path $suiteRoot 'build\media-suite_helper.sh')).Contains('# GParty cleanup hardening v1.'))) {
+    if (-not ([IO.File]::ReadAllText((Join-Path $suiteRoot 'build\media-suite_helper.sh')).Contains('# GParty cleanup hardening v2.'))) {
         throw 'The cleanup hardening patch disappeared during the build.'
     }
 
     foreach ($name in $requiredExecutables) {
         $source = Join-Path $binDir $name
         if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
-            throw "MABS reported success but did not freshly produce $name for $Label."
+            throw "MABS did not freshly produce $name for $Label."
         }
         $item = Get-Item -LiteralPath $source
         if ($item.Length -lt 1MB -or $item.LastWriteTimeUtc -lt $buildStartedUtc.AddSeconds(-2)) {

@@ -1,7 +1,7 @@
 CUSTOM WINDOWS FFMPEG BUILD
 ===========================
 
-Run the workflow named "Build Custom FFmpeg 21" manually from GitHub Actions.
+Run the workflow named "Build Custom FFmpeg 22" manually from GitHub Actions.
 
 SUCCESS
 -------
@@ -50,6 +50,8 @@ BUILD POLICY
 * Fresh sources and clean compilation every run. No cache.
 * media-autobuild_suite is pinned to the audited commit recorded in build.ps1;
   moving upstream code cannot silently change a four-hour build.
+* MABS Git network operations retry transient source-host failures up to eight times;
+  partial clone directories are removed before a retry so they cannot poison it.
 * One compiler thread for the entire build.
 * Stable is built and uploaded before master begins.
 * Latest stable and current master are resolved to exact immutable commits before

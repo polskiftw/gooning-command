@@ -367,6 +367,98 @@ function Patch-MabsCleanup {
     }
     [IO.File]::WriteAllText($scriptPath, $content, [System.Text.UTF8Encoding]::new($false))
 }
+function Patch-MabsGitRetries {
+    $scriptPath = Join-Path $suiteRoot 'build\media-suite_helper.sh'
+    if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) {
+        throw 'The MABS helper script is missing; cannot harden Git network operations.'
+    }
+    $content = [IO.File]::ReadAllText($scriptPath)
+    $marker = '# GParty Git network retry hardening v1.'
+
+    $retryAnchor = '# vcs_get_current_type /build/myrepo'
+    $retryFunctions = @'
+# GParty Git network retry hardening v1.
+# Source hosts occasionally return a transient 5xx or reset a connection. Retry
+# network operations, but preserve the final Git exit code.
+git_retry() {
+    local attempt=1 max_attempts=8 delay=1 exit_code
+    while true; do
+        "$@" && return 0
+        exit_code=$?
+        if (( attempt >= max_attempts )); then
+            printf 'Git command failed after %d attempts (exit %d):' "$attempt" "$exit_code" >&2
+            printf ' %q' "$@" >&2
+            printf '\n' >&2
+            return "$exit_code"
+        fi
+        printf 'Git command failed (attempt %d/%d, exit %d); retrying in %ds:' \
+            "$attempt" "$max_attempts" "$exit_code" "$delay" >&2
+        printf ' %q' "$@" >&2
+        printf '\n' >&2
+        sleep "$delay"
+        ((attempt++))
+        delay=$((delay * 2))
+    done
+}
+
+# A failed clone can leave a non-empty destination that makes every later clone
+# fail immediately. Remove only that explicit clone destination before each try.
+git_clone_retry() {
+    local destination=${!#} attempt=1 max_attempts=8 delay=1 exit_code
+    while true; do
+        rm -rf -- "$destination"
+        git clone "$@" && return 0
+        exit_code=$?
+        if (( attempt >= max_attempts )); then
+            rm -rf -- "$destination"
+            printf 'Git clone failed after %d attempts (exit %d): %s\n' \
+                "$attempt" "$exit_code" "$destination" >&2
+            return "$exit_code"
+        fi
+        printf 'Git clone failed (attempt %d/%d, exit %d); retrying in %ds: %s\n' \
+            "$attempt" "$max_attempts" "$exit_code" "$delay" "$destination" >&2
+        sleep "$delay"
+        ((attempt++))
+        delay=$((delay * 2))
+    done
+}
+
+# vcs_get_current_type /build/myrepo
+'@.TrimEnd([char]13,[char]10)
+
+    $replacements = [ordered]@{
+        $retryAnchor = $retryFunctions
+        'GIT_TERMINAL_PROMPT=0 git ls-remote -q --refs "$1" > /dev/null 2>&1' = 'GIT_TERMINAL_PROMPT=0 git_retry git ls-remote -q --refs "$1" > /dev/null 2>&1'
+        'git clone --filter=tree:0 "$vcsURL" "$vcsFolder-git"' = 'git_clone_retry --filter=tree:0 "$vcsURL" "$vcsFolder-git"'
+        'git fetch --all -Ppft $unshallow' = 'git_retry git fetch --all -Ppft $unshallow'
+        'git remote set-head -a origin' = 'git_retry git remote set-head -a origin'
+        'if _ref=$(git ls-remote --refs --exit-code -q -- "$vcsURL" "$ref"); then' = 'if _ref=$(git_retry git ls-remote --refs --exit-code -q -- "$vcsURL" "$ref"); then'
+        '*) git ls-remote --exit-code "$vcsURL" "${ref#origin/}" > /dev/null 2>&1 && ref=origin/${ref#origin/} ;;' = '*) git_retry git ls-remote --exit-code "$vcsURL" "${ref#origin/}" > /dev/null 2>&1 && ref=origin/${ref#origin/} ;;'
+        'log -q git.submodule git submodule update --jobs "$cpuCount" --filter=tree:0 --init --recursive' = 'log -q git.submodule git_retry git submodule update --jobs "$cpuCount" --filter=tree:0 --init --recursive'
+        'git fetch -q --refetch --no-filter' = 'git_retry git fetch -q --refetch --no-filter'
+    }
+
+    if ($content.Contains($marker)) {
+        foreach ($proof in 'git_retry()', 'git_clone_retry()', 'max_attempts=8', 'git_retry git fetch --all', 'git_retry git submodule update') {
+            if (-not $content.Contains($proof)) { throw "Existing Git retry patch is incomplete; missing: $proof" }
+        }
+        return
+    }
+
+    foreach ($pair in $replacements.GetEnumerator()) {
+        $count = ([regex]::Matches($content, [regex]::Escape($pair.Key))).Count
+        if ($count -ne 1) {
+            throw "Expected exactly one MABS Git retry anchor, found $count for: $($pair.Key)"
+        }
+        $content = $content.Replace($pair.Key, $pair.Value)
+    }
+
+    foreach ($proof in $marker, 'git_retry()', 'git_clone_retry()', 'max_attempts=8', 'git_retry git fetch --all', 'git_retry git submodule update') {
+        if (-not $content.Contains($proof)) { throw "Git retry patch postcondition failed; missing: $proof" }
+    }
+    [IO.File]::WriteAllText($scriptPath, $content, [System.Text.UTF8Encoding]::new($false))
+}
+
 function Resolve-LatestStableTag {
     Write-Stage 'Resolve latest stable FFmpeg tag with Git'
     $remoteTags = & git ls-remote --tags --refs https://github.com/FFmpeg/FFmpeg.git 2>&1
@@ -564,6 +656,9 @@ function Run-Mabs(
     }
     if (-not ([IO.File]::ReadAllText((Join-Path $suiteRoot 'build\media-suite_helper.sh')).Contains('# GParty cleanup hardening v2.'))) {
         throw 'The cleanup hardening patch disappeared during the build.'
+    }
+    if (-not ([IO.File]::ReadAllText((Join-Path $suiteRoot 'build\media-suite_helper.sh')).Contains('# GParty Git network retry hardening v1.'))) {
+        throw 'The Git network retry patch disappeared during the build.'
     }
 
     foreach ($name in $requiredExecutables) {
@@ -891,6 +986,7 @@ try {
 
     Patch-MabsLibvpxIncludePath
     Patch-MabsCleanup
+    Patch-MabsGitRetries
 
     $versionsPath = Join-Path $metaRoot 'resolved-versions.txt'
     if ($Variant -eq 'stable') {

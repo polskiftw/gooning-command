@@ -1,7 +1,7 @@
 CUSTOM WINDOWS FFMPEG BUILD
 ===========================
 
-Run the workflow named "Build Custom FFmpeg 22" manually from GitHub Actions.
+Run the workflow named "Build Custom FFmpeg 23" manually from GitHub Actions.
 
 SUCCESS
 -------
@@ -76,10 +76,13 @@ BUILD POLICY
   broad network transports, AviSynth, VapourSynth, frei0r and OpenCL are excluded.
 * The build fails rather than silently dropping a required feature or replacing a
   selected source dependency with an unexplained prebuilt runtime library.
-* Every executable must be PE32+ AMD64, pass dumpbin inspection, and identify the
-  intended FFmpeg source revision. FFmpeg must report every requested configure option.
-* CI performs a CPU-only H.264/AAC encode, MP4 mux, FFprobe inspection, and complete
-  audio/video decode before a build is accepted. NVIDIA execution remains a local test.
+* Every executable must be PE32+ AMD64 and pass dumpbin architecture and dependency
+  inspection. Source identity, requested configuration, build freshness, patch
+  integrity, artifact contents, and hashes are still validated in CI.
+* GitHub-hosted CPUs are not guaranteed to support -march=raptorlake, so CI never
+  executes the produced ffmpeg.exe, ffprobe.exe, or ffplay.exe binaries. The generated
+  validate-local.cmd performs the encode, MP4 mux, FFprobe inspection, and full decode
+  smoke test on the target i7-14700KF computer. NVIDIA execution is also tested locally.
 * Successful and recovery artifacts are retained for seven days.
 
 MAINTENANCE RULE

@@ -1,5 +1,5 @@
-name: Build Custom FFmpeg 20
-run-name: Build Custom FFmpeg 20
+name: Build Custom FFmpeg 21
+run-name: Build Custom FFmpeg 21
 
 on:
   workflow_dispatch:
@@ -44,6 +44,10 @@ jobs:
             $allErrors | ForEach-Object { Write-Host "$($_.Extent.File):$($_.Extent.StartLineNumber): $($_.Message)" }
             throw 'PowerShell syntax validation failed.'
           }
+
+      - name: Apply checked-in validator correction
+        shell: pwsh
+        run: '& "${{ github.workspace }}\.github\ffmpeg-build\patch-validator.ps1"'
 
       - name: Prepare clean workspace
         shell: pwsh

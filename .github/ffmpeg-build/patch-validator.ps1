@@ -71,7 +71,7 @@ foreach ($forbidden in '$apiSetContracts.Contains', 'Windows API-set schema coul
 
 $tokens = $null
 $parseErrors = $null
-[void][Management.Automation.Language.Parser]::ParseFile($buildScript, [ref]$tokens, [ref]$parseErrors)
+[void][System.Management.Automation.Language.Parser]::ParseFile($buildScript, [ref]$tokens, [ref]$parseErrors)
 if ($parseErrors.Count -gt 0) {
     $parseErrors | ForEach-Object { Write-Host "$($_.Extent.StartLineNumber): $($_.Message)" }
     throw 'Patched build.ps1 failed PowerShell syntax validation.'

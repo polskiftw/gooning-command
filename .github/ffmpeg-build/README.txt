@@ -1,7 +1,7 @@
 CUSTOM WINDOWS FFMPEG BUILD
 ===========================
 
-Run the workflow named "Build Custom FFmpeg 19" manually from GitHub Actions.
+Run the workflow named "Build Custom FFmpeg 21" manually from GitHub Actions.
 
 SUCCESS
 -------
@@ -59,11 +59,12 @@ BUILD POLICY
   when MABS printed its success marker and all three executables were freshly linked.
 * Every executable produced by MABS is copied into the recovery artifact area before
   any marker, source-identity, feature, dependency, or smoke-test validation runs.
-* The checked-in build script is the script that runs. No workflow-time scripts patch
-  or reconstruct the validator.
+* A checked-in, fail-closed correction script patches the validator deterministically
+  before every build and verifies both exact anchors and PowerShell syntax.
 * Static-only selected runtime dependencies; no bundled codec DLLs.
-* Windows API-set contract imports are recognized as operating-system dependencies
-  even when their virtual DLL names do not exist as files in System32.
+* Windows API-set contract imports are recognized by their rigid canonical grammar as
+  operating-system dependencies. Actual CRT/runtime DLLs such as ucrtbase.dll,
+  vcruntime*.dll, msvcp*.dll, and arbitrary third-party DLLs remain forbidden.
 * Aggressive i7-14700KF tuning: -O3 and Raptor Lake target.
 * RTX 4070 Super paths: NVENC, NVDEC, CUDA headers, D3D11VA, D3D12VA,
   Vulkan and libplacebo. Intel QSV and AMD AMF are excluded.

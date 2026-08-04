@@ -193,6 +193,85 @@ class DatabaseTests(unittest.TestCase):
             {items[1].key, items[2].key},
         )
 
+    def test_reverse_delete_invalidates_left_neighborhood_only(self) -> None:
+        left = asset("gallery/wrong-survivor.jpg")
+        right = asset("gallery/better-right.jpg")
+        sibling = asset("gallery/another-right.jpg")
+        other_left = asset("gallery/other-left.jpg")
+        other_right = asset("gallery/other-right.jpg")
+        self.database.upsert_inventory([left, right, sibling, other_left, other_right])
+        self.database.replace_pairs(
+            [
+                (left.key, right.key, 95.0, "current"),
+                (left.key, sibling.key, 93.0, "same survivor"),
+                (other_left.key, other_right.key, 91.0, "unrelated"),
+            ]
+        )
+
+        self.database.record_reverse_deletion(
+            left.key,
+            right.key,
+            left.size,
+            "deleted",
+        )
+
+        self.assertTrue(self.database.asset(left.key).deleted)
+        self.assertEqual(
+            [(pair.left_key, pair.right_key) for pair in self.database.scan_pairs()],
+            [(other_left.key, other_right.key)],
+        )
+        self.assertEqual(
+            [key for key, _pair_id, _size in self.database.queued_deletions()],
+            [other_right.key],
+        )
+        row = self.database.connection.execute(
+            "SELECT survivor_key, result FROM deletion_log WHERE deleted_key = ?",
+            (left.key,),
+        ).fetchone()
+        self.assertEqual((row["survivor_key"], row["result"]), (right.key, "deleted"))
+
+    def test_failed_reverse_delete_keeps_pair_and_queue(self) -> None:
+        left = asset("gallery/left.jpg")
+        right = asset("gallery/right.jpg")
+        self.database.upsert_inventory([left, right])
+        self.database.replace_pairs([(left.key, right.key, 95.0, "current")])
+
+        self.database.record_reverse_deletion(
+            left.key,
+            right.key,
+            left.size,
+            "permission denied",
+        )
+
+        self.assertFalse(self.database.asset(left.key).deleted)
+        self.assertEqual(len(self.database.scan_pairs()), 1)
+        self.assertEqual(
+            [key for key, _pair_id, _size in self.database.queued_deletions()],
+            [right.key],
+        )
+
+    def test_late_checkpoint_cannot_queue_against_reverse_deleted_asset(self) -> None:
+        left = asset("gallery/left.jpg")
+        right = asset("gallery/right.jpg")
+        self.database.upsert_inventory([left, right])
+        self.database.replace_pairs([(left.key, right.key, 95.0, "current")])
+        self.database.record_reverse_deletion(
+            left.key,
+            right.key,
+            left.size,
+            "deleted",
+        )
+
+        # A scan already in flight may publish one last checkpoint from its
+        # pre-deletion asset snapshot. It must not re-arm the right-side delete.
+        self.database.replace_pairs(
+            [(left.key, right.key, 95.0, "stale checkpoint")],
+            preserve_exclusions=True,
+        )
+
+        self.assertEqual(self.database.scan_pairs(), [])
+        self.assertEqual(self.database.queued_deletions(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

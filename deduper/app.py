@@ -59,6 +59,7 @@ class DeduperApp(tk.Tk):
         self.pair_index = 0
         self.busy = False
         self.review_locked = False
+        self.reverse_delete_busy = False
         self.preview_requests: dict[MediaPreview, int] = {}
         self.preview_cancellations: dict[MediaPreview, threading.Event] = {}
         state = self.database.matching_state()
@@ -198,6 +199,13 @@ class DeduperApp(tk.Tk):
             font=("Segoe UI", 11, "bold"),
         )
         self.pair_label.pack(expand=True)
+        self.reverse_delete_button = ttk.Button(
+            center,
+            text="DELETE LEFT — KEEP RIGHT",
+            style="Danger.TButton",
+            command=self._delete_left_keep_right,
+        )
+        self.reverse_delete_button.pack(side="bottom", pady=(0, 14))
 
         navigation = tk.Frame(self, background=BG)
         navigation.pack(fill="x", padx=14, pady=7)
@@ -244,10 +252,13 @@ class DeduperApp(tk.Tk):
     def _set_busy(self, busy: bool, *, lock_review: bool = True) -> None:
         self.busy = busy
         self.review_locked = busy and lock_review
-        state = "disabled" if busy else "normal"
+        self._set_action_state()
+        self._set_review_state(bool(self.pairs))
+
+    def _set_action_state(self) -> None:
+        state = "disabled" if self.busy or self.reverse_delete_busy else "normal"
         for button in (self.scan_button, self.nuke_button, self.sha_nuke_button):
             button.configure(state=state)
-        self._set_review_state(bool(self.pairs))
 
     def _run(
         self,
@@ -487,6 +498,75 @@ class DeduperApp(tk.Tk):
         state = "normal" if enabled and not self.review_locked else "disabled"
         for button in (self.exclude_button, self.previous_button, self.next_button):
             button.configure(state=state)
+        reverse_state = (
+            "normal"
+            if enabled
+            and not self.review_locked
+            and not self.reverse_delete_busy
+            and self.config.allow_delete
+            else "disabled"
+        )
+        self.reverse_delete_button.configure(state=reverse_state)
+
+    def _delete_left_keep_right(self) -> None:
+        """Immediately delete only the current left object, with no confirmation."""
+        if (
+            not self.config.allow_delete
+            or self.review_locked
+            or self.reverse_delete_busy
+            or not self.pairs
+        ):
+            return
+        pair = self.pairs[self.pair_index]
+        left = self.database.asset(pair.left_key)
+        if left is None or left.deleted:
+            self._refresh_pairs()
+            return
+
+        self.reverse_delete_busy = True
+        self._set_action_state()
+        self._set_review_state(True)
+        self.status.set(f"Deleting left side now: {pair.left_key}")
+
+        def worker() -> None:
+            try:
+                results, deleted, index_error = self.store.delete_queued(
+                    [(pair.left_key, pair.id, left.size)]
+                )
+                result = results[0][3] if results else "R2 did not return a deletion result"
+                self.database.record_reverse_deletion(
+                    pair.left_key,
+                    pair.right_key,
+                    left.size,
+                    result,
+                )
+                if index_error:
+                    self.database.queue_index_cleanup(deleted)
+
+                if deleted:
+                    message = (
+                        f"Deleted left side and kept right: {pair.right_key}. "
+                        f"Reclaimed {human_bytes(left.size)}."
+                    )
+                    if index_error:
+                        message += (
+                            " Gallery index cleanup was saved for automatic retry: "
+                            f"{index_error}"
+                        )
+                else:
+                    message = f"LEFT DELETE FAILED — {result}"
+            except Exception as exc:
+                message = f"LEFT DELETE FAILED — {type(exc).__name__}: {exc}"
+            self._ui(self._reverse_delete_finished, message)
+
+        self.executor.submit(worker)
+
+    def _reverse_delete_finished(self, message: str) -> None:
+        self.reverse_delete_busy = False
+        self._set_action_state()
+        self.status.set(message)
+        self._refresh_counts()
+        self._refresh_pairs()
 
     def _exclude_current(self) -> None:
         if not self.pairs:

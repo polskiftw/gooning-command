@@ -277,7 +277,13 @@ class Database:
             self.connection.execute(
                 """
                 INSERT OR IGNORE INTO deletion_queue (key, pair_id)
-                SELECT right_key, id FROM pairs WHERE status = 'included'
+                SELECT p.right_key, p.id
+                FROM pairs p
+                JOIN assets left_asset ON left_asset.key = p.left_key
+                JOIN assets right_asset ON right_asset.key = p.right_key
+                WHERE p.status = 'included'
+                  AND left_asset.deleted = 0
+                  AND right_asset.deleted = 0
                 """
             )
         return len(normalized)
@@ -425,6 +431,71 @@ class Database:
                     self.connection.execute("UPDATE assets SET deleted = 1 WHERE key = ?", (key,))
                     self.connection.execute("DELETE FROM deletion_queue WHERE key = ?", (key,))
                     self.connection.execute("DELETE FROM sha_deletion_queue WHERE key = ?", (key,))
+
+    def record_reverse_deletion(
+        self,
+        left_key: str,
+        right_key: str,
+        size: int,
+        result: str,
+    ) -> None:
+        """Record an immediate left-side deletion and repair its comparison graph.
+
+        The automatic matcher may make one survivor the left side of several
+        comparisons. If that survivor is manually rejected, every comparison
+        involving it becomes invalid. Rebuilding the visual queue from the
+        remaining live pairs prevents any of those former right-side candidates
+        from being deleted merely because their recommended survivor is gone.
+        """
+        with self._lock, self.connection:
+            row = self.connection.execute(
+                """
+                SELECT id FROM pairs
+                WHERE left_key = ? AND right_key = ?
+                """,
+                (left_key, right_key),
+            ).fetchone()
+            pair_id = int(row["id"]) if row else None
+            self.connection.execute(
+                """
+                INSERT INTO deletion_log
+                    (deleted_key, survivor_key, pair_id, size, result)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (left_key, right_key, pair_id, size, result),
+            )
+            if result != "deleted":
+                return
+
+            self.connection.execute(
+                "UPDATE assets SET deleted = 1 WHERE key = ?",
+                (left_key,),
+            )
+            self.connection.execute(
+                "DELETE FROM sha_deletion_queue WHERE key = ? OR survivor_key = ?",
+                (left_key, left_key),
+            )
+
+            # Pair ids are deliberately disposable: matching checkpoints rebuild
+            # them. Remove the invalid neighborhood, then derive the queue again
+            # from the remaining live comparisons in one transaction.
+            self.connection.execute("DELETE FROM deletion_queue")
+            self.connection.execute(
+                "DELETE FROM pairs WHERE left_key = ? OR right_key = ?",
+                (left_key, left_key),
+            )
+            self.connection.execute(
+                """
+                INSERT OR IGNORE INTO deletion_queue (key, pair_id)
+                SELECT p.right_key, p.id
+                FROM pairs p
+                JOIN assets left_asset ON left_asset.key = p.left_key
+                JOIN assets right_asset ON right_asset.key = p.right_key
+                WHERE p.status = 'included'
+                  AND left_asset.deleted = 0
+                  AND right_asset.deleted = 0
+                """
+            )
 
     def queue_index_cleanup(self, keys: Iterable[str]) -> None:
         with self._lock, self.connection:

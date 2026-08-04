@@ -1,7 +1,7 @@
 CUSTOM WINDOWS FFMPEG BUILD
 ===========================
 
-Run the workflow named "Build Custom FFmpeg 23" manually from GitHub Actions.
+Run the workflow named "Build Custom FFmpeg 24" manually from GitHub Actions.
 
 SUCCESS
 -------
@@ -22,11 +22,15 @@ Each folder contains:
   ffplay.exe
   source-identity.txt
   recovery-stage.txt
-  build-info.txt
-  feature reports
+  target-cpu-static-validation.txt
   cpu-smoke-test.txt
+  VALIDATION-MANIFEST.txt
   SHA256SUMS.txt
-  verify-nvidia.cmd
+
+Runtime feature/version reports are included only when validation runs on a CPU that
+is allowed to execute the Raptor Lake-targeted binaries. GitHub-hosted runners use the
+explicit target-cpu-static validation contract instead, so absent runtime reports are
+not treated as packaging failures.
 
 Copy ffmpeg.exe and ffprobe.exe beside yt-dlp.exe or another program that needs them.
 No PATH changes or installer are used.
@@ -63,6 +67,10 @@ BUILD POLICY
   any marker, source-identity, feature, dependency, or smoke-test validation runs.
 * A checked-in, fail-closed correction script patches the validator deterministically
   before every build and verifies both exact anchors and PowerShell syntax.
+* Packaging has two explicit, mutually exclusive validation contracts: full runtime
+  validation on a compatible target CPU, or static-only CI validation for targeted
+  binaries. Packaging verifies the selected contract instead of requiring impossible
+  runtime reports from an intentionally non-executing CI path.
 * Static-only selected runtime dependencies; no bundled codec DLLs.
 * Windows API-set contract imports are recognized by their rigid canonical grammar as
   operating-system dependencies. Actual CRT/runtime DLLs such as ucrtbase.dll,

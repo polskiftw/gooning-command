@@ -13,6 +13,7 @@ from tkinter import ttk
 from .config import Config
 from .database import Database
 from .hashing import hash_file
+from .links import open_in_firefox, public_media_url
 from .matcher import acquire_pairs
 from .models import Pair
 from .preview import (
@@ -30,6 +31,7 @@ TEXT = "#f4f4f4"
 MUTED = "#aaa"
 RED = "#d62f2f"
 GREEN = "#35b56b"
+LINK = "#67a8ff"
 
 
 def human_bytes(value: int) -> str:
@@ -60,6 +62,8 @@ class DeduperApp(tk.Tk):
         self.busy = False
         self.review_locked = False
         self.reverse_delete_busy = False
+        self.left_asset_key: str | None = None
+        self.right_asset_key: str | None = None
         self.preview_requests: dict[MediaPreview, int] = {}
         self.preview_cancellations: dict[MediaPreview, threading.Event] = {}
         state = self.database.matching_state()
@@ -182,10 +186,33 @@ class DeduperApp(tk.Tk):
         self.left_preview.pack(fill="both", expand=True)
         self.right_preview = MediaPreview(right_panel, background=PANEL)
         self.right_preview.pack(fill="both", expand=True)
+        link_font = ("Segoe UI", 10, "underline")
+        self.left_link = tk.Label(
+            left_panel,
+            background=PANEL,
+            foreground=LINK,
+            activeforeground="#9bc6ff",
+            cursor="hand2",
+            font=link_font,
+            anchor="w",
+        )
+        self.left_link.pack(fill="x", padx=8, pady=(6, 0))
+        self.left_link.bind("<Button-1>", lambda _event: self._open_asset("left"))
         self.left_meta = tk.Label(left_panel, background=PANEL, foreground=MUTED, justify="left", anchor="w")
-        self.left_meta.pack(fill="x", padx=8, pady=6)
+        self.left_meta.pack(fill="x", padx=8, pady=(0, 6))
+        self.right_link = tk.Label(
+            right_panel,
+            background=PANEL,
+            foreground=LINK,
+            activeforeground="#9bc6ff",
+            cursor="hand2",
+            font=link_font,
+            anchor="w",
+        )
+        self.right_link.pack(fill="x", padx=8, pady=(6, 0))
+        self.right_link.bind("<Button-1>", lambda _event: self._open_asset("right"))
         self.right_meta = tk.Label(right_panel, background=PANEL, foreground=MUTED, justify="left", anchor="w")
-        self.right_meta.pack(fill="x", padx=8, pady=6)
+        self.right_meta.pack(fill="x", padx=8, pady=(0, 6))
 
         center = tk.Frame(comparison, background=BG, width=190)
         center.grid(row=1, column=1, sticky="ns", padx=12)
@@ -417,6 +444,10 @@ class DeduperApp(tk.Tk):
     def _show_current_pair(self) -> None:
         if not self.pairs:
             self.pair_label.configure(text=self.empty_pair_message)
+            self.left_asset_key = None
+            self.right_asset_key = None
+            self.left_link.configure(text="", cursor="")
+            self.right_link.configure(text="", cursor="")
             self.left_meta.configure(text="")
             self.right_meta.configure(text="")
             self.left_preview.clear("No target")
@@ -427,6 +458,10 @@ class DeduperApp(tk.Tk):
         pair = self.pairs[self.pair_index]
         left = self.database.asset(pair.left_key)
         right = self.database.asset(pair.right_key)
+        self.left_asset_key = pair.left_key
+        self.right_asset_key = pair.right_key
+        self.left_link.configure(text=pair.left_key, cursor="hand2")
+        self.right_link.configure(text=pair.right_key, cursor="hand2")
         exclusion = "\n\nEXCLUDED FROM THIS NUKE" if pair.status == "excluded" else ""
         self.pair_label.configure(
             text=(
@@ -450,7 +485,17 @@ class DeduperApp(tk.Tk):
             f"{asset.width}×{asset.height}" if asset.width and asset.height else "unknown dimensions"
         )
         duration = f"  •  {asset.duration:.1f}s" if asset.duration else ""
-        return f"{asset.key}\n{human_bytes(asset.size)}  •  {dimensions}{duration}"
+        return f"{human_bytes(asset.size)}  •  {dimensions}{duration}"
+
+    def _open_asset(self, side: str) -> None:
+        key = self.left_asset_key if side == "left" else self.right_asset_key
+        if not key:
+            return
+        try:
+            open_in_firefox(public_media_url(key))
+            self.status.set(f"Opened in Firefox: {key}")
+        except OSError as exc:
+            self.status.set(f"COULD NOT OPEN FIREFOX — {exc}")
 
     def _load_preview(self, key: str, widget: MediaPreview) -> None:
         widget.clear()

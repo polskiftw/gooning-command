@@ -9,6 +9,7 @@ from deduper.certified_slider import install_certified_slider_lock
 from deduper.config import ConfigError, app_directory, parse_config
 from deduper.database import Database
 from deduper.database_migration import migrate_and_recover
+from deduper.evidence_contract import enforce_evidence_contract
 from deduper.evidence_store import EvidenceStore
 from deduper.r2 import R2Store
 from deduper.ready_lifecycle import install_ready_lifecycle
@@ -49,6 +50,7 @@ def main() -> int:
         return 3
     install_ready_lifecycle(database)
     evidence = EvidenceStore(data_directory / "gparty-evidence.sqlite3")
+    enforce_evidence_contract(evidence)
     store = R2Store(config)
     app = SmartDeduperApp(config, database, store, data_directory, evidence=evidence)
     app.mainloop()
@@ -56,6 +58,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    # Required for ProcessPoolExecutor inside the packaged Windows executable.
     multiprocessing.freeze_support()
     raise SystemExit(main())

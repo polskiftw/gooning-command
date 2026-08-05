@@ -48,16 +48,9 @@ def carry_forward_after_removals(
             UPDATE asset_frontier_coverage
             SET inventory_fingerprint = ?, completed_at = CURRENT_TIMESTAMP
             WHERE inventory_fingerprint = ?
-              AND asset_key NOT IN (
-                  SELECT key FROM inventory_snapshot WHERE key NOT IN (
-                      SELECT key FROM inventory_snapshot
-                  )
-              )
             """,
             (new_fingerprint, old_fingerprint),
         )
-        # The subquery above intentionally reduces to the rows that survived the
-        # snapshot replacement. Clean up any stale coverage defensively.
         evidence.connection.execute(
             """
             DELETE FROM asset_frontier_coverage

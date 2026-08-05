@@ -3,13 +3,12 @@ from __future__ import annotations
 import threading
 
 from .app import DeduperApp
-from .band_scanner import make_band_scanner
 from .cache_view import cached_pairs_for_slider
-from .evidence_capture import capture_pair_evidence
 from .evidence_inventory import reconcile_asset_inventory
 from .evidence_store import EvidenceStore
-from .matcher import MatchingCancelled, acquire_pair_stages, partition_exact_duplicates
-from .progressive_indexer import IndexingCancelled, run_progressive_index
+from .matcher import partition_exact_duplicates
+from .progressive_group_indexer import run_progressive_group_index
+from .progressive_indexer import IndexingCancelled
 from .scanner import scan_assets
 
 
@@ -97,7 +96,8 @@ class FastDeduperApp(DeduperApp):
         )
 
     def start_scan(self) -> None:
-        slider = int(round(self.slider.get()))
+        # The visible slider is intentionally not read here. SCAN owns its own
+        # strict-to-loose progression; the slider is only a certified-view filter.
         self.scan_cancel.clear()
 
         def scan() -> str:
@@ -110,15 +110,15 @@ class FastDeduperApp(DeduperApp):
             missing_count = self.database.mark_missing_deleted(live_keys)
             pending = list(self.database.assets_needing_hashes())
 
-            def progress(completed: int, total: int, key: str) -> None:
-                self._ui(self.status.set, f"SCAN {completed}/{total} — {key}")
+            def hash_progress(completed: int, total: int, key: str) -> None:
+                self._ui(self.status.set, f"HASH {completed}/{total} — {key}")
 
             completed, errors = scan_assets(
                 pending,
                 self.store,
                 self.config,
                 self.database.save_hashes,
-                progress,
+                hash_progress,
                 self.scan_cancel,
             )
             if self.scan_cancel.is_set() and completed < len(pending):
@@ -130,94 +130,53 @@ class FastDeduperApp(DeduperApp):
             assets = self.database.all_hashed_assets()
             visual_assets, sha_deletions = partition_exact_duplicates(assets)
             sha_target_count = self.database.replace_sha_deletions(sha_deletions)
-            self.database.replace_pairs([])
             self.database.set_matching_state("running")
             self._ui(
                 self._set_empty_pair_message,
-                "Comparison running…\n\nVisual matches will appear as each stage finishes.",
+                "Indexing from Strict toward Loose…\n\nThe slider only views completed ranges.",
             )
 
-            stage_totals = {
-                "pHash": sum(
-                    1 for asset in visual_assets if asset.phash and not asset.vpdq_hashes
-                ),
-                "PDQ": sum(
-                    1 for asset in visual_assets if asset.pdq_hash and not asset.vpdq_hashes
-                ),
-                "crop-resistant": len(visual_assets),
-                "vPDQ index": sum(1 for asset in visual_assets if asset.vpdq_hashes),
-                "vPDQ": sum(1 for asset in visual_assets if asset.vpdq_hashes),
-            }
-            self._ui(self._begin_matching_progress, stage_totals, sha_target_count)
+            completed_bands = 0
+            completed_groups = 0
 
-            def matching_progress(stage: str, completed: int, total: int) -> None:
-                self._ui(self._update_matching_progress, stage, completed, total)
-
-            target_count = 0
-            observed_edges = self.evidence.edge_count()
-            try:
-                for stage, pairs in acquire_pair_stages(
-                    visual_assets,
-                    slider,
-                    matching_progress,
-                    self.scan_cancel.is_set,
-                    include_exact=False,
-                    compare_workers=self.config.compare_workers,
-                ):
-                    target_count = self.database.replace_pairs(
-                        pairs,
-                        preserve_exclusions=True,
-                    )
-                    capture_pair_evidence(self.evidence, visual_assets, pairs, slider)
-                    observed_edges = self.evidence.edge_count()
-                    self.database.set_matching_state(stage)
-                    self._ui(self._matching_stage_saved, stage, target_count)
-            except MatchingCancelled:
-                self.database.set_matching_state("cancelled")
+            def group_progress(band, result, seed_count: int) -> None:
+                nonlocal completed_groups
+                if result.group is not None:
+                    completed_groups += 1
                 self._ui(
-                    self._set_empty_pair_message,
-                    "Comparison stopped safely.\n\nAny completed matching stage remains saved.",
+                    self.status.set,
+                    (
+                        f"Band {band.strictest_slider}–{band.loosest_slider}: "
+                        f"closed seed {result.seed_key}; {len(result.members)} members; "
+                        f"{completed_groups} groups completed."
+                    ),
                 )
-                return (
-                    f"Matching stopped safely. {target_count} visual candidates and "
-                    f"{sha_target_count} SHA extras remain ready; "
-                    f"{observed_edges} permanent evidence edges saved; "
-                    "press SCAN to continue with a fresh comparison."
-                )
-            except Exception:
-                self.database.set_matching_state("failed")
-                self._ui(
-                    self._set_empty_pair_message,
-                    "Comparison failed.\n\nAny completed matching stage remains saved; see the status below.",
-                )
-                raise
 
-            indexed_bands = 0
-
-            def index_progress(result) -> None:
-                nonlocal indexed_bands
-                indexed_bands += 1
-                self._ui(self._index_band_completed, result)
+            def band_progress(result) -> None:
+                nonlocal completed_bands
+                completed_bands += 1
+                self._ui(self._progressive_band_completed, result)
 
             try:
                 self._ui(
                     self.status.set,
-                    "Building permanent index from Strict toward Loose…",
+                    "Building permanent index independently from Strict toward Loose…",
                 )
-                run_progressive_index(
+                run_progressive_group_index(
                     self.evidence,
                     visual_assets,
-                    make_band_scanner(self.config.compare_workers),
+                    compare_workers=self.config.compare_workers,
                     cancelled=self.scan_cancel.is_set,
-                    progress=index_progress,
+                    band_progress=band_progress,
+                    group_progress=group_progress,
                 )
             except IndexingCancelled:
                 boundary = self.evidence.loosest_complete_slider()
                 boundary_text = "none" if boundary is None else str(boundary)
                 return (
-                    f"Preview matching complete with {target_count} visual candidates. "
-                    f"Permanent indexing stopped safely after {indexed_bands} completed bands; "
-                    f"unlocked through slider {boundary_text}; resume with SCAN."
+                    f"Indexing stopped safely after {completed_bands} completed bands and "
+                    f"{completed_groups} closed groups; unlocked through slider "
+                    f"{boundary_text}; resume with SCAN."
                 )
 
             observed_edges = self.evidence.edge_count()
@@ -232,92 +191,31 @@ class FastDeduperApp(DeduperApp):
                     f"{len(delta.changed)} changed, {len(delta.removed)} removed"
                 )
             )
+            self.database.set_matching_state("complete")
             return (
                 f"Scan complete. {new_count} new, {changed_count} changed, "
-                f"{missing_count} missing, {errors} errors, {target_count} visual candidates, "
+                f"{missing_count} missing, {errors} errors, "
                 f"{sha_target_count} invisible SHA extras, {observed_edges} permanent evidence edges, "
-                f"index unlocked through slider {boundary_text}; {cache_summary}."
+                f"{completed_groups} closed groups, index unlocked through slider "
+                f"{boundary_text}; {cache_summary}."
             )
 
-        self._run("Starting parallel scan…", scan, self._scan_finished, lock_review=False)
+        self._run("Starting independent progressive scan…", scan, self._scan_finished, lock_review=False)
 
     def _scan_finished(self) -> None:
         self._refresh_index_boundary(apply=True)
         self._refresh_pairs()
 
-    def _index_band_completed(self, result) -> None:
+    def _progressive_band_completed(self, result) -> None:
+        group_count = result.group_result.groups_completed
         self.status.set(
             f"Permanent index unlocked through slider {result.band.loosest_slider}; "
+            f"{group_count} groups closed in this band; "
             f"{result.total_edges:,} evidence edges saved."
         )
         self._refresh_index_boundary(apply=False)
 
-    def _begin_matching_progress(self, totals: dict[str, int], sha_targets: int) -> None:
-        self.matching_totals = totals
-        self.matching_completed = {stage: 0 for stage in totals}
-        self.sha_target_count = sha_targets
-        self._render_matching_progress()
-        self._refresh_counts()
-        self._refresh_pairs()
-
-    def _update_matching_progress(self, stage: str, completed: int, total: int) -> None:
-        if not hasattr(self, "matching_totals"):
-            return
-        self.matching_totals[stage] = total
-        self.matching_completed[stage] = completed
-        self._render_matching_progress()
-
-    def _render_matching_progress(self) -> None:
-        labels = {
-            "pHash": "pHash",
-            "PDQ": "PDQ",
-            "crop-resistant": "Crop",
-            "vPDQ index": "vPDQ index",
-            "vPDQ": "vPDQ",
-        }
-        parts = []
-        completed_total = 0
-        work_total = 0
-        for stage in ("pHash", "PDQ", "crop-resistant", "vPDQ index", "vPDQ"):
-            total = self.matching_totals.get(stage, 0)
-            completed = min(self.matching_completed.get(stage, 0), total)
-            completed_total += completed
-            work_total += total
-            percent = 100 if total == 0 else round(completed * 100 / total)
-            parts.append(f"{labels[stage]} {completed:,}/{total:,} ({percent}%)")
-        overall = 100 if work_total == 0 else round(completed_total * 100 / work_total)
-        self.comparison_progress.set(
-            f"CPU ×{self.config.compare_workers}  •  "
-            f"SHA extras {self.sha_target_count:,} (hidden)  •  "
-            + "  •  ".join(parts)
-            + f"  •  FULL CHECK {overall}%"
-        )
-
-    def _matching_stage_saved(self, stage: str, target_count: int) -> None:
-        labels = {
-            "exact": "Exact duplicates saved",
-            "phash": "pHash matches saved",
-            "pdq": "PDQ matches saved",
-            "images": "Image matches saved",
-            "complete": "All matching complete",
-        }
-        empty_messages = {
-            "exact": "Exact matching finished.\n\nVisual comparison is still running…",
-            "phash": "pHash matching finished.\n\nPDQ comparison is still running…",
-            "pdq": "PDQ matching finished.\n\nCrop-resistant comparison is still running…",
-            "images": "Image matching finished.\n\nVideo comparison is still running…",
-            "complete": "No duplicates found.\n\nThe comparison completed successfully.",
-        }
-        self._set_empty_pair_message(empty_messages[stage])
-        self.status.set(f"{labels[stage]} — {target_count} deletion candidates safe in the database.")
-        self._refresh_counts()
-        self._refresh_pairs()
-
     def _nuke_finished(self) -> None:
-        counts = self.database.counts()
-        if hasattr(self, "sha_target_count"):
-            self.sha_target_count = counts["sha_queued"]
-            self._render_matching_progress()
         self._refresh_pairs()
 
     def _close(self) -> None:

@@ -1,4 +1,4 @@
-name: Build GParty Deduper 3
+name: Build GParty Deduper 4
 
 on:
   workflow_dispatch:
@@ -106,29 +106,26 @@ jobs:
             throw "Portable ZIP is unexpectedly small"
           }
 
-      - name: Scan package with Microsoft Defender
+      - name: Scan package with Microsoft Defender CLI
         shell: pwsh
         run: |
           $package = (Resolve-Path "deduper/dist/GParty-Deduper-Windows").Path
           $zip = (Resolve-Path "deduper/dist/GParty-Deduper-Windows.zip").Path
-          $before = @(Get-MpThreatDetection -ErrorAction SilentlyContinue | ForEach-Object ThreatID)
+          $platformRoot = Join-Path $env:ProgramData "Microsoft/Windows Defender/Platform"
+          $platform = Get-ChildItem $platformRoot -Directory | Sort-Object Name -Descending | Select-Object -First 1
+          if (!$platform) { throw "Microsoft Defender platform directory was not found." }
+          $scanner = Join-Path $platform.FullName "MpCmdRun.exe"
+          if (!(Test-Path $scanner)) { throw "Microsoft Defender CLI was not found: $scanner" }
 
-          try {
-            Update-MpSignature -ErrorAction Continue
-            Start-MpScan -ScanType CustomScan -ScanPath $package -ErrorAction Stop
-            Start-MpScan -ScanType CustomScan -ScanPath $zip -ErrorAction Stop
-          } catch {
-            throw "Microsoft Defender scan could not be completed: $($_.Exception.Message)"
+          foreach ($target in @($package, $zip)) {
+            & $scanner -Scan -ScanType 3 -File $target -DisableRemediation
+            $exitCode = $LASTEXITCODE
+            if ($exitCode -ne 0) {
+              throw "Microsoft Defender CLI rejected or could not scan $target (exit code $exitCode). Artifact upload blocked."
+            }
           }
 
-          $after = @(Get-MpThreatDetection -ErrorAction SilentlyContinue)
-          $newThreats = @($after | Where-Object { $_.ThreatID -notin $before })
-          if ($newThreats.Count -gt 0) {
-            $newThreats | Format-List * | Out-String | Write-Host
-            throw "Microsoft Defender detected the packaged application. Artifact upload blocked."
-          }
-
-          Write-Host "Microsoft Defender scan completed with no new detections."
+          Write-Host "Microsoft Defender CLI scans completed with no detections."
 
       - name: Upload Windows ZIP
         uses: actions/upload-artifact@v6

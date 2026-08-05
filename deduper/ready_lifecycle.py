@@ -46,7 +46,7 @@ def remember_exclusion(database: Database, left_key: str, right_key: str) -> Non
 
 
 def apply_ready_decisions(database: Database) -> int:
-    """Reapply durable exclusions after disposable pair rows are rebuilt."""
+    """Reapply permanent exclusions after disposable pair rows are rebuilt."""
     with database._lock, database.connection:
         excluded_rows = database.connection.execute(
             """
@@ -93,11 +93,13 @@ def purge_asset_decisions(database: Database, keys: Iterable[str]) -> int:
 
 
 def install_ready_lifecycle(database: Database) -> None:
-    """Make READY decisions survive pair-row replacement and purge on deletion.
+    """Install durable pair decisions without changing ordinary Exclude semantics.
 
-    Pair rows and ids are intentionally disposable. These hooks preserve the
-    user's normalized pair decision independently, then reapply it after every
-    legacy or certified rebuild. Installation is idempotent per Database object.
+    ``exclude_pair_keys`` remains session/run-only: it changes only the current
+    disposable pair row. ``exclude_pair_permanently`` records the normalized pair
+    separately and reapplies that decision after future pair-table rebuilds.
+    Permanent decisions are purged when either underlying asset is deleted.
+    Installation is idempotent per Database object.
     """
     if getattr(database, "_ready_lifecycle_installed", False):
         return
@@ -113,7 +115,7 @@ def install_ready_lifecycle(database: Database) -> None:
         apply_ready_decisions(self)
         return count
 
-    def exclude_pair_keys(self, left_key: str, right_key: str) -> bool:
+    def exclude_pair_permanently(self, left_key: str, right_key: str) -> bool:
         excluded = original_exclude_pair_keys(left_key, right_key)
         if excluded:
             remember_exclusion(self, left_key, right_key)
@@ -139,7 +141,7 @@ def install_ready_lifecycle(database: Database) -> None:
             purge_asset_decisions(self, (left_key,))
 
     database.replace_pairs = MethodType(replace_pairs, database)
-    database.exclude_pair_keys = MethodType(exclude_pair_keys, database)
+    database.exclude_pair_permanently = MethodType(exclude_pair_permanently, database)
     database.record_deletions = MethodType(record_deletions, database)
     database.record_reverse_deletion = MethodType(record_reverse_deletion, database)
     database._ready_lifecycle_installed = True

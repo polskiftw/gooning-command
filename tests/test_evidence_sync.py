@@ -4,8 +4,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from deduper.evidence_qualification import mark_edges_qualified
 from deduper.evidence_store import EvidenceEdge, EvidenceStore, InventoryRecord
 from deduper.evidence_sync import inventory_delta, reconcile_inventory
+from deduper.group_closure import certify_closed_groups, mark_frontier_complete, ready_group_members
 
 
 class EvidenceSyncTests(unittest.TestCase):
@@ -81,6 +83,43 @@ class EvidenceSyncTests(unittest.TestCase):
         self.assertFalse(result.cache_was_current)
         self.assertEqual(result.delta.removed, frozenset({"b"}))
         self.assertEqual(result.delta.added, frozenset({"c"}))
+
+    def test_removal_only_preserves_boundary_and_unaffected_ready_group(self) -> None:
+        original = [
+            InventoryRecord("a", 1),
+            InventoryRecord("b", 2),
+            InventoryRecord("c", 3),
+        ]
+        self.store.replace_inventory_snapshot(original)
+        edge = EvidenceEdge("a", "b", phash_distance=1, evidence_mask=1)
+        self.store.upsert_edges([edge])
+        mark_edges_qualified(self.store, [edge], 95)
+        mark_frontier_complete(self.store, ["a", "b"], 95)
+        certify_closed_groups(self.store, 95)
+        self.store.mark_range_complete(95)
+
+        result = reconcile_inventory(
+            self.store,
+            [InventoryRecord("a", 1), InventoryRecord("b", 2)],
+        )
+
+        self.assertTrue(result.delta.is_removal_only)
+        self.assertTrue(result.reused_complete_boundary)
+        self.assertEqual(self.store.loosest_complete_slider(), 95)
+        self.assertEqual(ready_group_members(self.store, 95), {"a", "b"})
+
+    def test_addition_does_not_reuse_old_boundary(self) -> None:
+        original = [InventoryRecord("a", 1), InventoryRecord("b", 2)]
+        self.store.replace_inventory_snapshot(original)
+        self.store.mark_range_complete(80)
+
+        result = reconcile_inventory(
+            self.store,
+            original + [InventoryRecord("c", 3)],
+        )
+
+        self.assertFalse(result.reused_complete_boundary)
+        self.assertIsNone(self.store.loosest_complete_slider())
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ from tkinter import messagebox
 
 from deduper.config import ConfigError, app_directory, parse_config
 from deduper.database import Database
+from deduper.evidence_store import EvidenceStore
 from deduper.fast_app import FastDeduperApp
 from deduper.r2 import R2Store
 
@@ -26,8 +27,9 @@ def main() -> int:
         return 2
 
     database = Database(data_directory / "gparty-deduper.sqlite3")
+    evidence = EvidenceStore(data_directory / "gparty-evidence.sqlite3")
     store = R2Store(config)
-    app = FastDeduperApp(config, database, store, data_directory)
+    app = FastDeduperApp(config, database, store, data_directory, evidence=evidence)
     app.mainloop()
     return 0
 

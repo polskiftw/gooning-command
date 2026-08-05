@@ -3,6 +3,8 @@ from __future__ import annotations
 import threading
 
 from .app import DeduperApp
+from .evidence_inventory import reconcile_asset_inventory
+from .evidence_store import EvidenceStore
 from .matcher import MatchingCancelled, acquire_pair_stages, partition_exact_duplicates
 from .scanner import scan_assets
 
@@ -10,8 +12,9 @@ from .scanner import scan_assets
 class FastDeduperApp(DeduperApp):
     """Deduper UI with a bounded concurrent, resumable scan pipeline."""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, evidence: EvidenceStore, **kwargs):
         self.scan_cancel = threading.Event()
+        self.evidence = evidence
         super().__init__(*args, **kwargs)
 
     def start_scan(self) -> None:
@@ -22,6 +25,7 @@ class FastDeduperApp(DeduperApp):
             self._ui(self.status.set, "Connecting to R2 and reading inventory…")
             self.store.verify()
             inventory = self.store.list_assets()
+            evidence_sync = reconcile_asset_inventory(self.evidence, inventory)
             live_keys = {asset.key for asset in inventory}
             new_count, changed_count = self.database.upsert_inventory(inventory)
             missing_count = self.database.mark_missing_deleted(live_keys)
@@ -106,10 +110,20 @@ class FastDeduperApp(DeduperApp):
                     "Comparison failed.\n\nAny completed matching stage remains saved; see the status below.",
                 )
                 raise
+
+            delta = evidence_sync.delta
+            cache_summary = (
+                "evidence inventory unchanged"
+                if evidence_sync.cache_was_current
+                else (
+                    f"evidence inventory: {len(delta.added)} added, "
+                    f"{len(delta.changed)} changed, {len(delta.removed)} removed"
+                )
+            )
             return (
                 f"Scan complete. {new_count} new, {changed_count} changed, "
                 f"{missing_count} missing, {errors} errors, {target_count} visual candidates, "
-                f"{sha_target_count} invisible SHA extras."
+                f"{sha_target_count} invisible SHA extras; {cache_summary}."
             )
 
         self._run("Starting parallel scan…", scan, self._refresh_pairs, lock_review=False)
@@ -192,5 +206,6 @@ class FastDeduperApp(DeduperApp):
         # Wait for active workers to leave their current download/decode cleanly before
         # SQLite is closed. Completed hashes have already been committed individually.
         self.executor.shutdown(wait=True, cancel_futures=True)
+        self.evidence.close()
         self.database.close()
         self.destroy()

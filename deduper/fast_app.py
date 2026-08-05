@@ -3,10 +3,12 @@ from __future__ import annotations
 import threading
 
 from .app import DeduperApp
+from .band_scanner import make_band_scanner
 from .evidence_capture import capture_pair_evidence
 from .evidence_inventory import reconcile_asset_inventory
 from .evidence_store import EvidenceStore
 from .matcher import MatchingCancelled, acquire_pair_stages, partition_exact_duplicates
+from .progressive_indexer import IndexingCancelled, run_progressive_index
 from .scanner import scan_assets
 
 
@@ -116,6 +118,43 @@ class FastDeduperApp(DeduperApp):
                 )
                 raise
 
+            indexed_bands = 0
+
+            def index_progress(result) -> None:
+                nonlocal indexed_bands
+                indexed_bands += 1
+                self._ui(
+                    self.status.set,
+                    (
+                        f"Permanent index unlocked through slider {result.band.loosest_slider}; "
+                        f"{result.total_edges:,} evidence edges saved."
+                    ),
+                )
+
+            try:
+                self._ui(
+                    self.status.set,
+                    "Building permanent index from Strict toward Loose…",
+                )
+                run_progressive_index(
+                    self.evidence,
+                    visual_assets,
+                    make_band_scanner(self.config.compare_workers),
+                    cancelled=self.scan_cancel.is_set,
+                    progress=index_progress,
+                )
+            except IndexingCancelled:
+                boundary = self.evidence.loosest_complete_slider()
+                boundary_text = "none" if boundary is None else str(boundary)
+                return (
+                    f"Preview matching complete with {target_count} visual candidates. "
+                    f"Permanent indexing stopped safely after {indexed_bands} completed bands; "
+                    f"unlocked through slider {boundary_text}; resume with SCAN."
+                )
+
+            observed_edges = self.evidence.edge_count()
+            boundary = self.evidence.loosest_complete_slider()
+            boundary_text = "none" if boundary is None else str(boundary)
             delta = evidence_sync.delta
             cache_summary = (
                 "evidence inventory unchanged"
@@ -128,8 +167,8 @@ class FastDeduperApp(DeduperApp):
             return (
                 f"Scan complete. {new_count} new, {changed_count} changed, "
                 f"{missing_count} missing, {errors} errors, {target_count} visual candidates, "
-                f"{sha_target_count} invisible SHA extras, {observed_edges} permanent evidence edges; "
-                f"{cache_summary}."
+                f"{sha_target_count} invisible SHA extras, {observed_edges} permanent evidence edges, "
+                f"index unlocked through slider {boundary_text}; {cache_summary}."
             )
 
         self._run("Starting parallel scan…", scan, self._refresh_pairs, lock_review=False)

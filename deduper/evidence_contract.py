@@ -19,6 +19,12 @@ def enforce_evidence_contract(evidence: EvidenceStore) -> bool:
         return False
 
     with evidence._lock, evidence.connection:
+        existing = {
+            str(row[0])
+            for row in evidence.connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
         for table in (
             "ready_group_members",
             "ready_groups",
@@ -26,7 +32,8 @@ def enforce_evidence_contract(evidence: EvidenceStore) -> bool:
             "edge_qualification",
             "comparison_edges",
         ):
-            evidence.connection.execute(f"DELETE FROM {table}")
+            if table in existing:
+                evidence.connection.execute(f"DELETE FROM {table}")
         evidence.connection.execute(
             """
             INSERT INTO cache_state (key, value) VALUES

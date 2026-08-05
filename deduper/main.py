@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import messagebox
 
 from deduper.app import DeduperApp
+from deduper.certified_slider import install_certified_slider_lock
 from deduper.config import ConfigError, app_directory, parse_config
 from deduper.database import Database
 from deduper.database_migration import migrate_and_recover
@@ -31,6 +32,7 @@ def main() -> int:
         return 2
 
     install_review_ui_hardening(DeduperApp)
+    install_certified_slider_lock(SmartDeduperApp)
     database = Database(data_directory / "gparty-deduper.sqlite3")
     try:
         migrate_and_recover(database)

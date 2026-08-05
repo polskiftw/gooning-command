@@ -5,6 +5,8 @@ from dataclasses import dataclass
 
 from .evidence_qualification import mark_edges_qualified
 from .evidence_store import EvidenceEdge, EvidenceStore
+from .frontier_worker import FrontierCancelled
+from .group_scheduler import run_group_seed_schedule
 from .matcher import thresholds
 from .models import Asset
 
@@ -42,12 +44,7 @@ def _signature(slider: int) -> tuple[tuple[str, float | int], ...]:
 
 
 def index_bands() -> list[IndexBand]:
-    """Collapse the 100 slider positions into distinct matcher configurations.
-
-    Positions are traversed strict-to-loose (99 down to 0). Adjacent positions
-    with identical effective thresholds share one band and are completed by one
-    matcher pass.
-    """
+    """Collapse the 100 slider positions into distinct matcher configurations."""
     bands: list[IndexBand] = []
     current_signature: tuple[tuple[str, float | int], ...] | None = None
     strictest = loosest = 99
@@ -87,18 +84,31 @@ def run_progressive_index(
     cancelled: Callable[[], bool] | None = None,
     progress: ProgressCallback | None = None,
 ) -> list[BandResult]:
-    """Build durable evidence strict-to-loose with transactional checkpoints.
+    """Publish closed groups first, then complete strict-to-loose band coverage.
 
-    ``scan_band`` must return the complete evidence set discoverable for that
-    band's matcher configuration. Evidence rows may be upserted repeatedly, but
-    the slider boundary moves only after evidence and its qualification metadata
-    both commit. Therefore an interrupted band is never advertised as READY.
+    Matcher-proven seed edges from the selected live slider are processed one
+    connected component at a time. Each component becomes READY as soon as all
+    member frontiers are exhausted. The slower whole-library band pass then
+    continues as a completeness backstop and advances the slider boundary only
+    after a complete band commits.
     """
     materialized_assets = list(assets)
     is_cancelled = cancelled or (lambda: False)
     results: list[BandResult] = []
 
     evidence.set_state("build_status", "building")
+    observed_slider = evidence.get_state("last_observed_slider")
+    if observed_slider is not None:
+        try:
+            run_group_seed_schedule(
+                evidence,
+                materialized_assets,
+                int(observed_slider),
+                cancelled=is_cancelled,
+            )
+        except FrontierCancelled as exc:
+            raise IndexingCancelled() from exc
+
     for band in pending_bands(evidence):
         if is_cancelled():
             raise IndexingCancelled()
@@ -116,8 +126,6 @@ def run_progressive_index(
         written = evidence.upsert_edges(edges)
         mark_edges_qualified(evidence, edges, band.strictest_slider)
         if is_cancelled():
-            # Rows and qualifications are safe observations, but this band is not
-            # certified until the completion boundary advances below.
             evidence.set_state("active_band_status", "cancelled_after_commit")
             raise IndexingCancelled()
 

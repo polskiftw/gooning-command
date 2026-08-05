@@ -49,6 +49,22 @@ def inventory_delta(
     )
 
 
+def _stored_inventory(evidence: EvidenceStore) -> list[InventoryRecord]:
+    with evidence._lock:
+        rows = evidence.connection.execute(
+            "SELECT key, size, etag, last_modified FROM inventory_snapshot ORDER BY key"
+        ).fetchall()
+    return [
+        InventoryRecord(
+            key=str(row["key"]),
+            size=int(row["size"]),
+            etag=str(row["etag"]),
+            last_modified=str(row["last_modified"]),
+        )
+        for row in rows
+    ]
+
+
 def reconcile_inventory(
     evidence: EvidenceStore,
     current: Iterable[InventoryRecord],
@@ -57,15 +73,16 @@ def reconcile_inventory(
 
     Existing evidence for unchanged assets remains valid. Edges touching changed
     or removed assets are invalidated, while newly added assets begin with no
-    edges. The inventory snapshot is replaced atomically after invalidation.
+    edges. The inventory snapshot is replaced after invalidation.
     """
     materialized = list(current)
-    previous = evidence.inventory_records()
+    previous = _stored_inventory(evidence)
     delta = inventory_delta(previous, materialized)
     cache_was_current = not delta.has_changes and evidence.inventory_matches(materialized)
 
     if delta.has_changes:
-        evidence.invalidate_assets(delta.changed | delta.removed)
+        for key in sorted(delta.changed | delta.removed):
+            evidence.remove_asset(key)
         evidence.set_state("build_status", "dirty")
         evidence.set_state("loosest_complete_slider", "100")
 

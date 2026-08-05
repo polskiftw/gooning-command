@@ -1,4 +1,4 @@
-name: Build GParty Deduper 5
+name: Build GParty Deduper 6
 
 on:
   workflow_dispatch:
@@ -49,9 +49,10 @@ jobs:
           $package = "deduper/dist/GParty-Deduper-Windows-Transparent"
           $runtime = Join-Path $package "runtime"
           $app = Join-Path $package "app"
+          $appSource = Join-Path $app "deduper"
 
           Remove-Item $package -Recurse -Force -ErrorAction SilentlyContinue
-          New-Item -ItemType Directory -Force -Path $runtime, $app | Out-Null
+          New-Item -ItemType Directory -Force -Path $runtime, $appSource | Out-Null
 
           # Copy the normal official CPython installation supplied by actions/setup-python.
           Copy-Item -Path (Join-Path $env:pythonLocation "*") -Destination $runtime -Recurse -Force
@@ -62,9 +63,13 @@ jobs:
           New-Item -ItemType Directory -Force -Path $sitePackages | Out-Null
           python -m pip install --no-compile --target $sitePackages -r deduper/requirements.txt
 
-          Copy-Item -Path "deduper" -Destination (Join-Path $app "deduper") -Recurse -Force
-          Remove-Item (Join-Path $app "deduper/dist") -Recurse -Force -ErrorAction SilentlyContinue
-          Remove-Item (Join-Path $app "deduper/build") -Recurse -Force -ErrorAction SilentlyContinue
+          # Copy only source/runtime files. Never copy deduper/dist or deduper/build into a package
+          # that itself lives under deduper/dist, because that recursively copies the package into itself.
+          Get-ChildItem "deduper" -Force | Where-Object {
+            $_.Name -notin @("dist", "build", "__pycache__")
+          } | ForEach-Object {
+            Copy-Item $_.FullName -Destination $appSource -Recurse -Force
+          }
           Get-ChildItem $app -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
           Copy-Item "deduper/config.example.txt" "$package/config.example.txt"
@@ -119,6 +124,11 @@ jobs:
           }
           if (Test-Path (Join-Path $package "frozen-contents.txt")) {
             throw "frozen-contents.txt must not exist in the transparent package."
+          }
+
+          $nestedPackage = Join-Path $package "app/deduper/dist/GParty-Deduper-Windows-Transparent"
+          if (Test-Path $nestedPackage) {
+            throw "Recursive package copy detected: $nestedPackage"
           }
 
       - name: Create portable ZIP

@@ -77,13 +77,7 @@ def mark_frontier_complete(
     asset_keys: Iterable[str],
     slider: int,
 ) -> int:
-    """Record that each asset's complete candidate frontier was exhausted.
-
-    The scanner may call this only after every candidate source used by the
-    matcher (pHash, PDQ, crop-resistant, and vPDQ) has completed for the asset at
-    this slider. The current inventory fingerprint binds the proof to the exact
-    object set that was searched.
-    """
+    """Record that each asset's complete candidate frontier was exhausted."""
     ensure_closure_schema(evidence)
     value = max(0, min(99, int(slider)))
     fingerprint = _inventory_identity(evidence)
@@ -161,12 +155,14 @@ def _components(evidence: EvidenceStore, slider: int) -> list[set[str]]:
 
 
 def certify_closed_groups(evidence: EvidenceStore, slider: int) -> list[ClosedGroup]:
-    """Publish only components whose complete external frontier is proven closed."""
+    """Publish components whose members all have current-inventory frontier proof.
+
+    This intentionally does not require the whole slider band to be complete.
+    Per-group closure is the safety proof; the band boundary remains a separate
+    whole-library completeness signal.
+    """
     ensure_closure_schema(evidence)
     value = max(0, min(99, int(slider)))
-    boundary = evidence.loosest_complete_slider()
-    if boundary is None or value < boundary:
-        raise ValueError("slider is not inside the certified evidence range")
     fingerprint = _inventory_identity(evidence)
 
     with evidence._lock:

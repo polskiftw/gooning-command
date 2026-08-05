@@ -98,7 +98,7 @@ class SmartDeduperApp(FastDeduperApp):
                 self._streaming_ready_slider = slider
                 self._streaming_ready_pairs = target_count
                 self._ui(self._refresh_pairs)
-                self._ui(self._refresh_index_boundary, apply=False)
+                self._ui(lambda: self._refresh_index_boundary(apply=False))
                 return target_count
 
             def group_progress(band, result, seed_count: int) -> None:

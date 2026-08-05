@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .cache_view import ready_pairs_for_slider
+from .cache_view import cached_pairs_for_slider
 from .evidence_inventory import reconcile_asset_inventory
 from .fast_app import FastDeduperApp
 from .focused_recertification import recertify_added_or_changed_assets
@@ -19,8 +19,15 @@ class SmartDeduperApp(FastDeduperApp):
         self._streaming_ready_pairs = 0
         self._inventory_verified_for_delete = False
         self._scan_completed_current_inventory = False
+
+        # Review rows from an interrupted/older scan must never be presented as
+        # CERTIFIED for this new session. They are disposable projections of the
+        # durable evidence cache and will be rebuilt only after a complete band
+        # boundary makes their group membership and survivor orientation final.
+        self.database.replace_pairs([], preserve_exclusions=True)
+        self._refresh_pairs()
         self._set_action_state()
-        self._set_review_state(bool(self.pairs))
+        self._set_review_state(False)
 
         def scan() -> str:
             self._ui(self.status.set, "Connecting to R2 and reading inventory…")
@@ -57,7 +64,10 @@ class SmartDeduperApp(FastDeduperApp):
             self.database.set_matching_state("running")
             self._ui(
                 self._set_empty_pair_message,
-                "Indexing from Strict toward Loose…\n\nCertified groups will appear here as soon as they close.",
+                "Indexing from Strict toward Loose…\n\n"
+                "Review pairs appear only after an entire threshold band is complete. "
+                "Once labeled CERTIFIED, their group, survivor, and left/right row are final "
+                "for this scan.",
             )
 
             delta = evidence_sync.delta
@@ -89,8 +99,12 @@ class SmartDeduperApp(FastDeduperApp):
             completed_bands = 0
             completed_groups = 0
 
-            def publish_ready_groups(slider: int) -> int:
-                pairs = ready_pairs_for_slider(self.evidence, visual_assets, slider)
+            def publish_certified_band(slider: int) -> int:
+                # cached_pairs_for_slider refuses incomplete bands. Therefore
+                # every published row is based on the authoritative, complete
+                # graph for this inventory and threshold and cannot be reoriented
+                # by later work in this same scan.
+                pairs = cached_pairs_for_slider(self.evidence, visual_assets, slider)
                 target_count = self.database.replace_pairs(
                     pairs,
                     preserve_exclusions=True,
@@ -108,26 +122,34 @@ class SmartDeduperApp(FastDeduperApp):
                         self.status.set,
                         (
                             f"Band {band.strictest_slider}–{band.loosest_slider}: "
-                            f"seed {result.seed_key} still open after {seed_count} seeds; "
-                            f"{len(result.members)} discovered members."
+                            f"seed {result.seed_key} frontier processed after {seed_count} seeds; "
+                            f"{len(result.members)} discovered members. Waiting for full-band proof."
                         ),
                     )
                     return
                 completed_groups += 1
-                target_count = publish_ready_groups(band.loosest_slider)
                 self._ui(
                     self.status.set,
                     (
-                        f"CERTIFIED group {completed_groups}: {len(result.group.members)} members "
-                        f"at slider {band.loosest_slider}; {target_count} READY review pairs "
-                        "published while the rest of the band continues."
+                        f"Candidate group {completed_groups}: {len(result.group.members)} members "
+                        f"at slider {band.loosest_slider}; waiting for the complete band before "
+                        "publishing any CERTIFIED review rows."
                     ),
                 )
 
             def band_progress(result) -> None:
                 nonlocal completed_bands
                 completed_bands += 1
+                target_count = publish_certified_band(result.band.loosest_slider)
                 self._ui(self._progressive_band_completed, result)
+                self._ui(
+                    self.status.set,
+                    (
+                        f"CERTIFIED band {result.band.strictest_slider}–"
+                        f"{result.band.loosest_slider} complete: {target_count} final review pairs. "
+                        "Published rows will not change during this scan."
+                    ),
+                )
 
             try:
                 if incremental is None:
@@ -155,9 +177,9 @@ class SmartDeduperApp(FastDeduperApp):
                 boundary = self.evidence.loosest_complete_slider()
                 boundary_text = "none" if boundary is None else str(boundary)
                 return (
-                    f"Indexing stopped safely after {completed_bands} completed bands and "
-                    f"{completed_groups} certified groups; unlocked through slider "
-                    f"{boundary_text}; early READY work remains saved; NUKE remains locked."
+                    f"Indexing stopped safely after {completed_bands} completed bands; "
+                    f"unlocked through slider {boundary_text}. Only fully certified review rows "
+                    "were published; NUKE remains locked."
                 )
 
             observed_edges = self.evidence.edge_count()
@@ -189,7 +211,7 @@ class SmartDeduperApp(FastDeduperApp):
                 f"Scan complete. {new_count} new, {changed_count} changed, "
                 f"{missing_count} missing, {errors} errors, "
                 f"{sha_target_count} invisible SHA extras, {observed_edges} permanent evidence edges, "
-                f"{completed_groups} newly streamed groups, index unlocked through slider "
+                f"{completed_bands} newly certified bands, index unlocked through slider "
                 f"{boundary_text}; {cache_summary}; {safety_summary}."
             )
 

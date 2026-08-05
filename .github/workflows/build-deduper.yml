@@ -1,4 +1,4 @@
-name: Build GParty Deduper 4
+name: Build GParty Deduper 5
 
 on:
   workflow_dispatch:
@@ -27,90 +27,115 @@ jobs:
       - name: Get the project files
         uses: actions/checkout@v7
 
-      - name: Set up Python
+      - name: Set up official CPython
         uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: deduper/requirements-build.txt
+          cache-dependency-path: deduper/requirements.txt
 
-      - name: Install deduper packages
+      - name: Install test dependencies
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          pip install -r deduper/requirements-build.txt
+          pip install -r deduper/requirements.txt
 
       - name: Run full deduper test suite
         run: python -m unittest discover -s tests -p "test_*.py" -v
 
-      - name: Verify packaging imports
+      - name: Assemble transparent portable runtime
         shell: pwsh
         run: |
-          python -c "import deduper.main, deduper.smart_app, deduper.focused_matcher, deduper.focused_recertification, deduper.incremental_recertification, deduper.database_migration, deduper.review_ui; print('Packaging imports OK')"
+          $package = "deduper/dist/GParty-Deduper-Windows-Transparent"
+          $runtime = Join-Path $package "runtime"
+          $app = Join-Path $package "app"
 
-      - name: Build Windows application without UPX
-        working-directory: deduper
-        run: pyinstaller --clean --noconfirm "GPartyDeduper.spec"
+          Remove-Item $package -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $runtime, $app | Out-Null
 
-      - name: Validate frozen application layout
-        shell: pwsh
-        run: |
-          $app = "deduper/dist/GParty Deduper"
-          $exe = Join-Path $app "GParty Deduper.exe"
-          if (!(Test-Path $exe)) { throw "Missing frozen executable: $exe" }
-          if ((Get-Item $exe).Length -lt 100KB) { throw "Frozen executable is unexpectedly small" }
+          # Copy the normal official CPython installation supplied by actions/setup-python.
+          Copy-Item -Path (Join-Path $env:pythonLocation "*") -Destination $runtime -Recurse -Force
 
-          $requiredPatterns = @(
-            "*python312*.dll",
-            "*opencv*.dll",
-            "*sqlite*.dll"
-          )
-          foreach ($pattern in $requiredPatterns) {
-            $found = Get-ChildItem -Path $app -Recurse -File -Filter $pattern -ErrorAction SilentlyContinue
-            if (!$found) { throw "Missing required packaged dependency matching $pattern" }
-          }
+          # Replace build-machine packages with only the runtime dependencies.
+          $sitePackages = Join-Path $runtime "Lib/site-packages"
+          Remove-Item $sitePackages -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $sitePackages | Out-Null
+          python -m pip install --no-compile --target $sitePackages -r deduper/requirements.txt
 
-          pyinstaller --version
-          $pyz = "deduper/build/GPartyDeduper/PYZ-00.pyz"
-          if (!(Test-Path $pyz)) { throw "Missing PyInstaller module archive: $pyz" }
-          python -m PyInstaller.utils.cliutils.archive_viewer -l $pyz | Out-File "deduper/dist/frozen-contents.txt"
-          $contents = Get-Content "deduper/dist/frozen-contents.txt" -Raw
-          foreach ($module in @(
-            "deduper.smart_app",
-            "deduper.focused_matcher",
-            "deduper.focused_recertification",
-            "deduper.incremental_recertification",
-            "deduper.database_migration",
-            "deduper.review_ui"
-          )) {
-            if ($contents -notmatch [regex]::Escape($module)) {
-              throw "Frozen module archive is missing $module"
-            }
-          }
+          Copy-Item -Path "deduper" -Destination (Join-Path $app "deduper") -Recurse -Force
+          Remove-Item (Join-Path $app "deduper/dist") -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item (Join-Path $app "deduper/build") -Recurse -Force -ErrorAction SilentlyContinue
+          Get-ChildItem $app -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
-      - name: Assemble portable ZIP
-        shell: pwsh
-        run: |
-          $package = "deduper/dist/GParty-Deduper-Windows"
-          New-Item -ItemType Directory -Force -Path $package | Out-Null
-          Copy-Item -Recurse "deduper/dist/GParty Deduper/*" $package
           Copy-Item "deduper/config.example.txt" "$package/config.example.txt"
           Copy-Item "LICENSE" "$package/LICENSE.txt"
-          Copy-Item "deduper/dist/frozen-contents.txt" "$package/frozen-contents.txt"
-          Compress-Archive -Path "$package/*" -DestinationPath "deduper/dist/GParty-Deduper-Windows.zip"
 
-          if (!(Test-Path "deduper/dist/GParty-Deduper-Windows.zip")) {
-            throw "Portable ZIP was not created"
+          @'
+          @echo off
+          setlocal
+          cd /d "%~dp0"
+          set "GPARTY_APP_DIR=%~dp0"
+          set "PYTHONPATH=%~dp0app"
+          start "GParty Deduper" "%~dp0runtime\pythonw.exe" -m deduper.main
+          endlocal
+          '@ | Set-Content -Path "$package/START GPARTY DEDUPER.cmd" -Encoding ascii
+
+          @'
+          GParty Deduper — Transparent Portable Build
+
+          Start the app with: START GPARTY DEDUPER.cmd
+
+          This package contains a normal, visible CPython runtime, the visible deduper source code,
+          and visible Python dependency folders. It does not contain a PyInstaller executable,
+          UPX packing, a self-extracting archive, or frozen-contents.txt.
+
+          Copy config.example.txt to config.txt and place your existing data folder beside the launcher.
+          '@ | Set-Content -Path "$package/README.txt" -Encoding utf8
+
+      - name: Validate transparent runtime
+        shell: pwsh
+        run: |
+          $package = (Resolve-Path "deduper/dist/GParty-Deduper-Windows-Transparent").Path
+          $runtimePython = Join-Path $package "runtime/python.exe"
+          $runtimePythonw = Join-Path $package "runtime/pythonw.exe"
+          $launcher = Join-Path $package "START GPARTY DEDUPER.cmd"
+
+          foreach ($required in @($runtimePython, $runtimePythonw, $launcher)) {
+            if (!(Test-Path $required)) { throw "Missing portable runtime file: $required" }
           }
-          if ((Get-Item "deduper/dist/GParty-Deduper-Windows.zip").Length -lt 1MB) {
-            throw "Portable ZIP is unexpectedly small"
+
+          $env:GPARTY_APP_DIR = $package
+          $env:PYTHONPATH = Join-Path $package "app"
+          & $runtimePython -c "import tkinter, cv2, boto3, PIL, imagehash, numpy, pdqhash, scipy; import deduper.main, deduper.smart_app, deduper.focused_matcher, deduper.focused_recertification, deduper.incremental_recertification, deduper.database_migration, deduper.review_ui; print('Transparent portable imports OK')"
+          if ($LASTEXITCODE -ne 0) { throw "Transparent runtime import validation failed." }
+
+          $resolved = & $runtimePython -c "from deduper.config import app_directory; print(app_directory())"
+          if ($resolved.TrimEnd('\') -ne $package.TrimEnd('\')) {
+            throw "Portable app directory resolved incorrectly: $resolved"
           }
+
+          if (Get-ChildItem $package -Recurse -Filter "GParty Deduper.exe" -ErrorAction SilentlyContinue) {
+            throw "A PyInstaller-style custom executable unexpectedly exists in the transparent package."
+          }
+          if (Test-Path (Join-Path $package "frozen-contents.txt")) {
+            throw "frozen-contents.txt must not exist in the transparent package."
+          }
+
+      - name: Create portable ZIP
+        shell: pwsh
+        run: |
+          $package = "deduper/dist/GParty-Deduper-Windows-Transparent"
+          $zip = "deduper/dist/GParty-Deduper-Windows-Transparent.zip"
+          Remove-Item $zip -Force -ErrorAction SilentlyContinue
+          Compress-Archive -Path "$package/*" -DestinationPath $zip
+          if (!(Test-Path $zip)) { throw "Transparent portable ZIP was not created." }
+          if ((Get-Item $zip).Length -lt 10MB) { throw "Transparent portable ZIP is unexpectedly small." }
 
       - name: Scan package with Microsoft Defender CLI
         shell: pwsh
         run: |
-          $package = (Resolve-Path "deduper/dist/GParty-Deduper-Windows").Path
-          $zip = (Resolve-Path "deduper/dist/GParty-Deduper-Windows.zip").Path
+          $package = (Resolve-Path "deduper/dist/GParty-Deduper-Windows-Transparent").Path
+          $zip = (Resolve-Path "deduper/dist/GParty-Deduper-Windows-Transparent.zip").Path
           $platformRoot = Join-Path $env:ProgramData "Microsoft/Windows Defender/Platform"
           $platform = Get-ChildItem $platformRoot -Directory | Sort-Object Name -Descending | Select-Object -First 1
           if (!$platform) { throw "Microsoft Defender platform directory was not found." }
@@ -119,58 +144,38 @@ jobs:
 
           foreach ($target in @($package, $zip)) {
             & $scanner -Scan -ScanType 3 -File $target -DisableRemediation
-            $exitCode = $LASTEXITCODE
-            if ($exitCode -ne 0) {
-              throw "Microsoft Defender CLI rejected or could not scan $target (exit code $exitCode). Artifact upload blocked."
+            if ($LASTEXITCODE -ne 0) {
+              throw "Microsoft Defender CLI rejected or could not scan $target (exit code $LASTEXITCODE). Artifact upload blocked."
             }
           }
 
           Write-Host "Microsoft Defender CLI scans completed with no detections."
 
-      - name: Upload Windows ZIP
+      - name: Upload transparent Windows ZIP
         uses: actions/upload-artifact@v6
         with:
-          name: GParty-Deduper-Windows
-          path: deduper/dist/GParty-Deduper-Windows.zip
+          name: GParty-Deduper-Windows-Transparent
+          path: deduper/dist/GParty-Deduper-Windows-Transparent.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publish latest Windows ZIP
+      - name: Publish latest transparent Windows ZIP
         if: github.ref == 'refs/heads/main'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $zip = "deduper/dist/GParty-Deduper-Windows.zip"
+          $zip = "deduper/dist/GParty-Deduper-Windows-Transparent.zip"
           $mainSha = (git ls-remote origin refs/heads/main).Split("`t")[0]
-
           if ($mainSha -ne $env:GITHUB_SHA) {
             Write-Host "A newer main commit exists. Skipping the rolling release."
             exit 0
           }
 
           gh release view windows-latest --repo $env:GITHUB_REPOSITORY *> $null
-          $releaseExists = $LASTEXITCODE -eq 0
-
-          if ($releaseExists) {
-            gh api `
-              --method PATCH `
-              "repos/$env:GITHUB_REPOSITORY/git/refs/tags/windows-latest" `
-              -f "sha=$env:GITHUB_SHA" `
-              -F "force=true"
-            gh release upload windows-latest $zip `
-              --clobber `
-              --repo $env:GITHUB_REPOSITORY
-            gh release edit windows-latest `
-              --latest `
-              --title "Latest Windows Build" `
-              --notes "Automatically built, tested, and scanned from the newest deduper code on main." `
-              --repo $env:GITHUB_REPOSITORY
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload windows-latest $zip --clobber --repo $env:GITHUB_REPOSITORY
+            gh release edit windows-latest --latest --title "Latest Transparent Windows Build" --notes "Normal CPython runtime and visible source; no PyInstaller or UPX." --repo $env:GITHUB_REPOSITORY
           } else {
-            gh release create windows-latest $zip `
-              --latest `
-              --target $env:GITHUB_SHA `
-              --title "Latest Windows Build" `
-              --notes "Automatically built, tested, and scanned from the newest deduper code on main." `
-              --repo $env:GITHUB_REPOSITORY
+            gh release create windows-latest $zip --latest --target $env:GITHUB_SHA --title "Latest Transparent Windows Build" --notes "Normal CPython runtime and visible source; no PyInstaller or UPX." --repo $env:GITHUB_REPOSITORY
           }

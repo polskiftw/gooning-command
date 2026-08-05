@@ -4,9 +4,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from deduper.cache_view import cached_pairs_for_slider
+from deduper.cache_view import cached_pairs_for_slider, ready_pairs_for_slider
 from deduper.evidence_qualification import mark_edges_qualified
-from deduper.evidence_store import EvidenceEdge, EvidenceStore
+from deduper.evidence_store import EvidenceEdge, EvidenceStore, InventoryRecord
+from deduper.group_closure import certify_closed_groups, mark_frontier_complete
 from deduper.models import Asset
 
 
@@ -28,6 +29,12 @@ class CacheViewTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.store = EvidenceStore(Path(self.temp.name) / "evidence.sqlite3")
         self.assets = [asset("a.jpg", 100), asset("b.jpg", 200)]
+        self.store.replace_inventory_snapshot(
+            [
+                InventoryRecord("a.jpg", 100, "a1"),
+                InventoryRecord("b.jpg", 200, "b1"),
+            ]
+        )
 
     def tearDown(self) -> None:
         self.store.close()
@@ -67,6 +74,27 @@ class CacheViewTests(unittest.TestCase):
             "SELECT first_qualified_slider FROM edge_qualification"
         ).fetchone()
         self.assertEqual(row["first_qualified_slider"], 75)
+
+    def test_ready_group_is_visible_before_band_completion(self) -> None:
+        edge = EvidenceEdge("a.jpg", "b.jpg", phash_distance=1, evidence_mask=1)
+        self.store.upsert_edges([edge])
+        mark_edges_qualified(self.store, [edge], 95)
+        mark_frontier_complete(self.store, ["a.jpg", "b.jpg"], 95)
+        certify_closed_groups(self.store, 95)
+
+        self.assertIsNone(self.store.loosest_complete_slider())
+        pairs = ready_pairs_for_slider(self.store, self.assets, 95)
+        self.assertEqual(len(pairs), 1)
+        self.assertEqual({pairs[0][0], pairs[0][1]}, {"a.jpg", "b.jpg"})
+
+    def test_uncertified_component_is_hidden_from_ready_view(self) -> None:
+        edge = EvidenceEdge("a.jpg", "b.jpg", phash_distance=1, evidence_mask=1)
+        self.store.upsert_edges([edge])
+        mark_edges_qualified(self.store, [edge], 95)
+        mark_frontier_complete(self.store, ["a.jpg"], 95)
+        certify_closed_groups(self.store, 95)
+
+        self.assertEqual(ready_pairs_for_slider(self.store, self.assets, 95), [])
 
 
 if __name__ == "__main__":

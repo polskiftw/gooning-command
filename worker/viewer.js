@@ -11,9 +11,43 @@ const SOURCE_REQUEST_HEADER = "x-gparty-source-request";
 const ALLOWED_EXTENSIONS = ["jpg", "jpeg", "png", "gif", "webp", "mp4", "m4v", "webm"];
 const STILL_EXTENSIONS = new Set(["jpg", "jpeg", "png", "webp"]);
 const CLIP_EXTENSIONS = new Set(["gif", "mp4", "m4v", "webm"]);
+const MAX_TAG_SELECTION_CACHE_ENTRIES = 256;
 
-let indexCache = { expires: 0, items: [] };
-let tagIndexCache = { expires: 0, catalog: [], items: [] };
+function emptyBuckets() {
+  return {
+    all: [],
+    stills: [],
+    clips: [],
+    ...Object.fromEntries(ALLOWED_EXTENSIONS.map((extension) => [extension, []])),
+  };
+}
+
+function buildBuckets(items) {
+  const buckets = emptyBuckets();
+  for (const item of items) {
+    const extension = String(item.ext || "").toLowerCase();
+    buckets.all.push(item);
+    if (STILL_EXTENSIONS.has(extension)) buckets.stills.push(item);
+    if (CLIP_EXTENSIONS.has(extension)) buckets.clips.push(item);
+    if (Object.hasOwn(buckets, extension)) buckets[extension].push(item);
+  }
+  return buckets;
+}
+
+function requestedBucketName(requested) {
+  if (requested === "stills" || requested === "clips") return requested;
+  if (ALLOWED_EXTENSIONS.includes(requested)) return requested;
+  return "all";
+}
+
+let indexCache = { expires: 0, buckets: emptyBuckets() };
+let tagIndexCache = {
+  expires: 0,
+  catalog: [],
+  items: [],
+  idsByName: new Map(),
+  selectionCache: new Map(),
+};
 
 export default {
   async fetch(request, env) {
@@ -55,24 +89,34 @@ export default {
 
 async function loadIndex(env) {
   const now = Date.now();
-  if (indexCache.expires > now && indexCache.items.length) return indexCache.items;
+  if (indexCache.expires > now && indexCache.buckets.all.length) return indexCache;
 
   const object = await env.MEDIA_BUCKET.get(INDEX_KEY);
-  if (!object) return [];
+  if (!object) return { expires: now + 30_000, buckets: emptyBuckets() };
 
   let payload;
   try {
     payload = JSON.parse(await object.text());
   } catch {
-    return [];
+    return { expires: now + 30_000, buckets: emptyBuckets() };
   }
 
   const rawItems = Array.isArray(payload) ? payload : payload.items;
   const items = Array.isArray(rawItems)
     ? rawItems.filter((item) => item && typeof item.key === "string" && item.key.startsWith("gallery/"))
     : [];
-  indexCache = { expires: now + 60_000, items };
-  return items;
+  indexCache = { expires: now + 60_000, buckets: buildBuckets(items) };
+  return indexCache;
+}
+
+function emptyTagIndexCache(expires) {
+  return {
+    expires,
+    catalog: [],
+    items: [],
+    idsByName: new Map(),
+    selectionCache: new Map(),
+  };
 }
 
 async function loadTagIndex(env) {
@@ -81,7 +125,7 @@ async function loadTagIndex(env) {
 
   const object = await env.MEDIA_BUCKET.get(TAG_INDEX_KEY);
   if (!object) {
-    tagIndexCache = { expires: now + 30_000, catalog: [], items: [] };
+    tagIndexCache = emptyTagIndexCache(now + 30_000);
     return tagIndexCache;
   }
 
@@ -89,14 +133,14 @@ async function loadTagIndex(env) {
   try {
     payload = JSON.parse(await object.text());
   } catch {
-    tagIndexCache = { expires: now + 30_000, catalog: [], items: [] };
+    tagIndexCache = emptyTagIndexCache(now + 30_000);
     return tagIndexCache;
   }
 
   const rawCatalog = Array.isArray(payload?.catalog) ? payload.catalog : [];
   const rawItems = Array.isArray(payload?.items) ? payload.items : [];
   if (payload?.version !== 1 || rawCatalog.length > 20_000 || rawItems.length > 250_000) {
-    tagIndexCache = { expires: now + 30_000, catalog: [], items: [] };
+    tagIndexCache = emptyTagIndexCache(now + 30_000);
     return tagIndexCache;
   }
 
@@ -125,9 +169,37 @@ async function loadTagIndex(env) {
     expires: now + 60_000,
     catalog,
     items,
+    idsByName: new Map(catalog.map((entry) => [entry.name, entry.id])),
+    selectionCache: new Map(),
     generatedAt: typeof payload.generated_at === "string" ? payload.generated_at : "",
   };
   return tagIndexCache;
+}
+
+function cacheTagSelection(tagIndex, cacheKey, choices) {
+  if (tagIndex.selectionCache.size >= MAX_TAG_SELECTION_CACHE_ENTRIES) {
+    const oldestKey = tagIndex.selectionCache.keys().next().value;
+    if (oldestKey !== undefined) tagIndex.selectionCache.delete(oldestKey);
+  }
+  tagIndex.selectionCache.set(cacheKey, choices);
+  return choices;
+}
+
+function taggedChoices(tagIndex, requestedIds, bucketName) {
+  const sortedIds = [...requestedIds].sort((left, right) => left - right);
+  const cacheKey = `${bucketName}:${sortedIds.join(",")}`;
+  const cached = tagIndex.selectionCache.get(cacheKey);
+  if (cached) return cached;
+
+  const choices = tagIndex.items.filter((item) => {
+    if (!sortedIds.every((id) => item.tags.includes(id))) return false;
+    const extension = item.ext;
+    if (bucketName === "stills") return STILL_EXTENSIONS.has(extension);
+    if (bucketName === "clips") return CLIP_EXTENSIONS.has(extension);
+    if (bucketName !== "all") return extension === bucketName;
+    return true;
+  });
+  return cacheTagSelection(tagIndex, cacheKey, choices);
 }
 
 async function tagCatalog(env) {
@@ -142,6 +214,7 @@ async function tagCatalog(env) {
 async function randomMedia(request, env) {
   const url = new URL(request.url);
   const requested = (url.searchParams.get("ext") || "all").toLowerCase();
+  const bucketName = requestedBucketName(requested);
   const requestedTags = [...new Set(url.searchParams.getAll("tag"))];
   if (requestedTags.length > 32) {
     return jsonResponse({ error: "Too many tags are selected." }, 400);
@@ -150,26 +223,17 @@ async function randomMedia(request, env) {
     return jsonResponse({ error: "The selected tags are invalid." }, 400);
   }
 
-  let items;
+  let choices;
   if (requestedTags.length) {
     const tagIndex = await loadTagIndex(env);
-    const idsByName = new Map(tagIndex.catalog.map((entry) => [entry.name, entry.id]));
-    if (requestedTags.some((name) => !idsByName.has(name))) {
+    if (requestedTags.some((name) => !tagIndex.idsByName.has(name))) {
       return jsonResponse({ error: "The selected tags are no longer available." }, 400);
     }
-    const requestedIds = requestedTags.map((name) => idsByName.get(name));
-    items = tagIndex.items.filter((item) => requestedIds.every((id) => item.tags.includes(id)));
+    const requestedIds = requestedTags.map((name) => tagIndex.idsByName.get(name));
+    choices = taggedChoices(tagIndex, requestedIds, bucketName);
   } else {
-    items = await loadIndex(env);
-  }
-
-  let choices = items;
-  if (requested === "stills") {
-    choices = items.filter((item) => STILL_EXTENSIONS.has(String(item.ext).toLowerCase()));
-  } else if (requested === "clips") {
-    choices = items.filter((item) => CLIP_EXTENSIONS.has(String(item.ext).toLowerCase()));
-  } else if (requested !== "all" && ALLOWED_EXTENSIONS.includes(requested)) {
-    choices = items.filter((item) => String(item.ext).toLowerCase() === requested);
+    const index = await loadIndex(env);
+    choices = index.buckets[bucketName];
   }
 
   if (!choices.length) {
@@ -183,7 +247,6 @@ async function randomMedia(request, env) {
     total: choices.length,
   });
 }
-
 
 function normalizeSubredditName(value) {
   let candidate = String(value || "").trim();

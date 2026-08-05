@@ -1,0 +1,26 @@
+name: Deduper Cache Tests
+
+on:
+  push:
+    branches:
+      - deduper-cache-foundation
+  pull_request:
+    paths:
+      - "deduper/evidence_store.py"
+      - "tests/test_evidence_store.py"
+      - ".github/workflows/deduper-cache-tests.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run evidence cache tests
+        run: python -m unittest -v tests.test_evidence_store

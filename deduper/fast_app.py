@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from tkinter import ttk
 
 from .app import DeduperApp
 from .cache_view import cached_pairs_for_slider, ready_pairs_for_slider
@@ -23,8 +24,103 @@ class FastDeduperApp(DeduperApp):
         self._streaming_ready_slider: int | None = None
         self._streaming_ready_pairs = 0
         super().__init__(*args, **kwargs)
+        self._install_exclusion_buttons()
         self.slider.trace_add("write", self._slider_changed)
         self._refresh_index_boundary(apply=False)
+        self._show_current_pair()
+
+    def _install_exclusion_buttons(self) -> None:
+        parent = self.exclude_button.master
+        self.exclude_button.grid_remove()
+        self.exclude_button.destroy()
+
+        self.exclude_button_frame = ttk.Frame(parent)
+        self.exclude_button_frame.grid(row=0, column=1, padx=12, pady=(0, 6))
+        self.exclude_button = ttk.Button(
+            self.exclude_button_frame,
+            text="EXCLUDE THIS RUN",
+            command=self._exclude_current,
+        )
+        self.exclude_button.pack(fill="x")
+        self.permanent_exclude_button = ttk.Button(
+            self.exclude_button_frame,
+            text="EXCLUDE PERMANENTLY",
+            command=self._exclude_permanently,
+        )
+        self.permanent_exclude_button.pack(fill="x", pady=(5, 0))
+
+    def _show_current_pair(self) -> None:
+        super()._show_current_pair()
+        if not hasattr(self, "permanent_exclude_button"):
+            return
+        if not self.pairs:
+            self.exclude_button.configure(text="EXCLUDE THIS RUN", state="disabled")
+            self.permanent_exclude_button.configure(
+                text="EXCLUDE PERMANENTLY",
+                state="disabled",
+            )
+            return
+        pair = self.pairs[self.pair_index]
+        if pair.status == "excluded":
+            self.exclude_button.configure(text="EXCLUDED", state="disabled")
+            self.permanent_exclude_button.configure(state="disabled")
+        else:
+            state = "disabled" if self.review_locked else "normal"
+            self.exclude_button.configure(text="EXCLUDE THIS RUN", state=state)
+            self.permanent_exclude_button.configure(
+                text="EXCLUDE PERMANENTLY",
+                state=state,
+            )
+
+    def _set_review_state(self, enabled: bool) -> None:
+        super()._set_review_state(enabled)
+        if not hasattr(self, "permanent_exclude_button"):
+            return
+        state = "normal" if enabled and not self.review_locked else "disabled"
+        self.permanent_exclude_button.configure(state=state)
+        if self.pairs and self.pairs[self.pair_index].status == "excluded":
+            self.exclude_button.configure(state="disabled")
+            self.permanent_exclude_button.configure(state="disabled")
+
+    def _advance_after_exclusion(self, message: str) -> None:
+        self.status.set(message)
+        self._refresh_counts()
+        self.pairs = self.database.scan_pairs()
+        if self.pairs:
+            self.pair_index = (self.pair_index + 1) % len(self.pairs)
+        else:
+            self.pair_index = 0
+        self._show_current_pair()
+
+    def _exclude_current(self) -> None:
+        if not self.pairs:
+            return
+        pair = self.pairs[self.pair_index]
+        if pair.status == "excluded":
+            return
+        if not self.database.exclude_pair_keys(pair.left_key, pair.right_key):
+            self._refresh_pairs()
+            return
+        self._advance_after_exclusion(
+            f"Excluded for this run only: {pair.left_key} ↔ {pair.right_key}"
+        )
+
+    def _exclude_permanently(self) -> None:
+        if not self.pairs:
+            return
+        pair = self.pairs[self.pair_index]
+        if pair.status == "excluded":
+            return
+        exclude_permanently = getattr(self.database, "exclude_pair_permanently", None)
+        if exclude_permanently is None:
+            self.status.set("Permanent exclusion is unavailable in this build.")
+            return
+        if not exclude_permanently(pair.left_key, pair.right_key):
+            self._refresh_pairs()
+            return
+        self._advance_after_exclusion(
+            f"Permanently excluded unchanged pair: {pair.left_key} ↔ {pair.right_key}"
+        )
 
     def _slider_changed(self, *_args) -> None:
         if self._slider_guard:

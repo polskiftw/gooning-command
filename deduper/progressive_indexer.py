@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 
+from .evidence_qualification import mark_edges_qualified
 from .evidence_store import EvidenceEdge, EvidenceStore
 from .matcher import thresholds
 from .models import Asset
@@ -90,8 +91,8 @@ def run_progressive_index(
 
     ``scan_band`` must return the complete evidence set discoverable for that
     band's matcher configuration. Evidence rows may be upserted repeatedly, but
-    the slider boundary moves only after the entire returned set commits.
-    Therefore an interrupted band is never advertised as READY.
+    the slider boundary moves only after evidence and its qualification metadata
+    both commit. Therefore an interrupted band is never advertised as READY.
     """
     materialized_assets = list(assets)
     is_cancelled = cancelled or (lambda: False)
@@ -113,9 +114,10 @@ def run_progressive_index(
 
         evidence.set_state("active_band_status", "committing")
         written = evidence.upsert_edges(edges)
+        mark_edges_qualified(evidence, edges, band.strictest_slider)
         if is_cancelled():
-            # Rows are safe observations, but this band is not certified. Do not
-            # advance the completion boundary after a cancellation.
+            # Rows and qualifications are safe observations, but this band is not
+            # certified until the completion boundary advances below.
             evidence.set_state("active_band_status", "cancelled_after_commit")
             raise IndexingCancelled()
 

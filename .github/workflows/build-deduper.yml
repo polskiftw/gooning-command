@@ -46,7 +46,7 @@ jobs:
       - name: Verify packaging imports
         shell: pwsh
         run: |
-          python -c "import deduper.main, deduper.smart_app, deduper.incremental_matcher, deduper.incremental_recertification, deduper.database_migration, deduper.review_ui; print('Packaging imports OK')"
+          python -c "import deduper.main, deduper.smart_app, deduper.focused_matcher, deduper.focused_recertification, deduper.incremental_recertification, deduper.database_migration, deduper.review_ui; print('Packaging imports OK')"
 
       - name: Build Windows application
         working-directory: deduper
@@ -75,7 +75,8 @@ jobs:
           $contents = Get-Content "deduper/dist/frozen-contents.txt" -Raw
           foreach ($module in @(
             "deduper.smart_app",
-            "deduper.incremental_matcher",
+            "deduper.focused_matcher",
+            "deduper.focused_recertification",
             "deduper.incremental_recertification",
             "deduper.database_migration",
             "deduper.review_ui"

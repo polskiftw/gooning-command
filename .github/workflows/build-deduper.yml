@@ -1,19 +1,21 @@
-name: Build GParty Deduper
+name: Build GParty Deduper 2
 
 on:
   workflow_dispatch:
   push:
     branches:
       - main
+      - deduper-cache-foundation
     paths:
       - "deduper/**"
+      - "tests/**"
       - ".github/workflows/build-deduper.yml"
 
 permissions:
   contents: write
 
 concurrency:
-  group: gparty-deduper-windows-build
+  group: gparty-deduper-windows-build-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -38,12 +40,50 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r deduper/requirements-build.txt
 
-      - name: Run deduper tests
-        run: python -m unittest discover -s deduper/tests -v
+      - name: Run full deduper test suite
+        run: python -m unittest discover -s tests -p "test_*.py" -v
+
+      - name: Verify packaging imports
+        shell: pwsh
+        run: |
+          python -c "import deduper.main, deduper.smart_app, deduper.incremental_matcher, deduper.incremental_recertification, deduper.database_migration, deduper.review_ui; print('Packaging imports OK')"
 
       - name: Build Windows application
         working-directory: deduper
         run: pyinstaller --clean --noconfirm "GPartyDeduper.spec"
+
+      - name: Validate frozen application layout
+        shell: pwsh
+        run: |
+          $app = "deduper/dist/GParty Deduper"
+          $exe = Join-Path $app "GParty Deduper.exe"
+          if (!(Test-Path $exe)) { throw "Missing frozen executable: $exe" }
+          if ((Get-Item $exe).Length -lt 100KB) { throw "Frozen executable is unexpectedly small" }
+
+          $requiredPatterns = @(
+            "*python312*.dll",
+            "*opencv*.dll",
+            "*sqlite*.dll"
+          )
+          foreach ($pattern in $requiredPatterns) {
+            $found = Get-ChildItem -Path $app -Recurse -File -Filter $pattern -ErrorAction SilentlyContinue
+            if (!$found) { throw "Missing required packaged dependency matching $pattern" }
+          }
+
+          pyinstaller --version
+          python -m PyInstaller.utils.cliutils.archive_viewer -l $exe | Out-File "deduper/dist/frozen-contents.txt"
+          $contents = Get-Content "deduper/dist/frozen-contents.txt" -Raw
+          foreach ($module in @(
+            "deduper.smart_app",
+            "deduper.incremental_matcher",
+            "deduper.incremental_recertification",
+            "deduper.database_migration",
+            "deduper.review_ui"
+          )) {
+            if ($contents -notmatch [regex]::Escape($module)) {
+              throw "Frozen archive is missing module $module"
+            }
+          }
 
       - name: Assemble portable ZIP
         shell: pwsh
@@ -53,7 +93,15 @@ jobs:
           Copy-Item -Recurse "deduper/dist/GParty Deduper/*" $package
           Copy-Item "deduper/config.example.txt" "$package/config.example.txt"
           Copy-Item "LICENSE" "$package/LICENSE.txt"
+          Copy-Item "deduper/dist/frozen-contents.txt" "$package/frozen-contents.txt"
           Compress-Archive -Path "$package/*" -DestinationPath "deduper/dist/GParty-Deduper-Windows.zip"
+
+          if (!(Test-Path "deduper/dist/GParty-Deduper-Windows.zip")) {
+            throw "Portable ZIP was not created"
+          }
+          if ((Get-Item "deduper/dist/GParty-Deduper-Windows.zip").Length -lt 1MB) {
+            throw "Portable ZIP is unexpectedly small"
+          }
 
       - name: Upload Windows ZIP
         uses: actions/upload-artifact@v6
@@ -64,6 +112,7 @@ jobs:
           retention-days: 30
 
       - name: Publish latest Windows ZIP
+        if: github.ref == 'refs/heads/main'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}

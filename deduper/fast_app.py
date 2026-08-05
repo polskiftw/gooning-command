@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 
 from .app import DeduperApp
+from .evidence_capture import capture_pair_evidence
 from .evidence_inventory import reconcile_asset_inventory
 from .evidence_store import EvidenceStore
 from .matcher import MatchingCancelled, acquire_pair_stages, partition_exact_duplicates
@@ -77,6 +78,7 @@ class FastDeduperApp(DeduperApp):
                 self._ui(self._update_matching_progress, stage, completed, total)
 
             target_count = 0
+            observed_edges = self.evidence.edge_count()
             try:
                 for stage, pairs in acquire_pair_stages(
                     visual_assets,
@@ -90,6 +92,8 @@ class FastDeduperApp(DeduperApp):
                         pairs,
                         preserve_exclusions=True,
                     )
+                    capture_pair_evidence(self.evidence, visual_assets, pairs, slider)
+                    observed_edges = self.evidence.edge_count()
                     self.database.set_matching_state(stage)
                     self._ui(self._matching_stage_saved, stage, target_count)
             except MatchingCancelled:
@@ -101,6 +105,7 @@ class FastDeduperApp(DeduperApp):
                 return (
                     f"Matching stopped safely. {target_count} visual candidates and "
                     f"{sha_target_count} SHA extras remain ready; "
+                    f"{observed_edges} permanent evidence edges saved; "
                     "press SCAN to continue with a fresh comparison."
                 )
             except Exception:
@@ -123,7 +128,8 @@ class FastDeduperApp(DeduperApp):
             return (
                 f"Scan complete. {new_count} new, {changed_count} changed, "
                 f"{missing_count} missing, {errors} errors, {target_count} visual candidates, "
-                f"{sha_target_count} invisible SHA extras; {cache_summary}."
+                f"{sha_target_count} invisible SHA extras, {observed_edges} permanent evidence edges; "
+                f"{cache_summary}."
             )
 
         self._run("Starting parallel scan…", scan, self._refresh_pairs, lock_review=False)

@@ -9,6 +9,7 @@ from deduper.database import Database
 from deduper.evidence_store import EvidenceStore
 from deduper.fast_app import FastDeduperApp
 from deduper.r2 import R2Store
+from deduper.ready_lifecycle import install_ready_lifecycle
 
 
 def main() -> int:
@@ -27,6 +28,7 @@ def main() -> int:
         return 2
 
     database = Database(data_directory / "gparty-deduper.sqlite3")
+    install_ready_lifecycle(database)
     evidence = EvidenceStore(data_directory / "gparty-evidence.sqlite3")
     store = R2Store(config)
     app = FastDeduperApp(config, database, store, data_directory, evidence=evidence)

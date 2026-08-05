@@ -21,6 +21,13 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: deduper/requirements.txt
+
+      - name: Install deduper dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r deduper/requirements.txt
 
       - name: Run full deduper test suite
         run: python -m unittest discover -s tests -p "test_*.py" -v

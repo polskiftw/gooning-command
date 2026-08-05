@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 
 from .evidence_capture import evidence_for_pairs
 from .evidence_store import EvidenceEdge
@@ -9,23 +10,36 @@ from .models import Asset
 from .progressive_indexer import IndexBand, IndexingCancelled
 
 
-def scan_index_band(
+@dataclass(frozen=True)
+class BandSeedStage:
+    """One completed matcher stage that can safely supply frontier seeds.
+
+    Stage edges are qualifying relationships, but they are not closure proof.
+    The frontier worker must still exhaust every member before publishing READY.
+    ``complete`` identifies the matcher's authoritative final band result.
+    """
+
+    name: str
+    edges: tuple[EvidenceEdge, ...]
+    complete: bool
+
+
+def stream_index_band_stages(
     assets: list[Asset],
     band: IndexBand,
     cancelled: Callable[[], bool],
     *,
     compare_workers: int = 1,
-) -> list[EvidenceEdge]:
-    """Return the complete qualifying evidence set for one index band.
+) -> Iterator[BandSeedStage]:
+    """Yield completed candidate stages while one band is still discovering.
 
-    The band's loosest slider position is authoritative because every stricter
-    position represented by the same band has identical effective matcher
-    thresholds. The legacy preview database is not touched.
+    This allows strict-to-loose group closure to begin as soon as the matcher
+    exposes its first qualifying relationships. The whole band is not considered
+    complete until the final ``complete`` stage has been yielded and committed.
     """
     if cancelled():
         raise IndexingCancelled()
 
-    final_pairs: list[tuple[str, str, float, str]] = []
     try:
         for stage, pairs in acquire_pair_stages(
             assets,
@@ -37,14 +51,36 @@ def scan_index_band(
         ):
             if cancelled():
                 raise IndexingCancelled()
-            if stage == "complete":
-                final_pairs = pairs
+            edges = tuple(evidence_for_pairs(assets, pairs, band.loosest_slider))
+            yield BandSeedStage(stage, edges, stage == "complete")
     except MatchingCancelled as exc:
         raise IndexingCancelled() from exc
 
+
+def scan_index_band(
+    assets: list[Asset],
+    band: IndexBand,
+    cancelled: Callable[[], bool],
+    *,
+    compare_workers: int = 1,
+) -> list[EvidenceEdge]:
+    """Return the complete qualifying evidence set for one index band."""
+    final_edges: tuple[EvidenceEdge, ...] = ()
+    saw_complete = False
+    for stage in stream_index_band_stages(
+        assets,
+        band,
+        cancelled,
+        compare_workers=compare_workers,
+    ):
+        if stage.complete:
+            final_edges = stage.edges
+            saw_complete = True
     if cancelled():
         raise IndexingCancelled()
-    return evidence_for_pairs(assets, final_pairs, band.loosest_slider)
+    if not saw_complete:
+        raise RuntimeError("matcher ended without a complete band stage")
+    return list(final_edges)
 
 
 def make_band_scanner(compare_workers: int) -> Callable[

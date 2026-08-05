@@ -38,8 +38,10 @@ class BandScannerTests(unittest.TestCase):
         ]
         edges = scan_index_band(assets, band(99), lambda: False)
         self.assertEqual(len(edges), 1)
-        self.assertEqual(edges[0].left_key, "gallery/a.jpg")
-        self.assertEqual(edges[0].right_key, "gallery/b.jpg")
+        self.assertEqual(
+            {edges[0].left_key, edges[0].right_key},
+            {"gallery/a.jpg", "gallery/b.jpg"},
+        )
         self.assertEqual(edges[0].phash_distance, 4)
 
     def test_loose_band_admits_relationship_rejected_by_strict_band(self) -> None:

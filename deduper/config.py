@@ -31,6 +31,9 @@ class Config:
 
 
 def app_directory() -> Path:
+    explicit_directory = os.environ.get("GPARTY_APP_DIR", "").strip()
+    if explicit_directory:
+        return Path(explicit_directory).expanduser().resolve()
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent

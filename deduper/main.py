@@ -8,10 +8,10 @@ from deduper.app import DeduperApp
 from deduper.config import ConfigError, app_directory, parse_config
 from deduper.database import Database
 from deduper.evidence_store import EvidenceStore
-from deduper.fast_app import FastDeduperApp
 from deduper.r2 import R2Store
 from deduper.ready_lifecycle import install_ready_lifecycle
 from deduper.review_ui import install_review_ui_hardening
+from deduper.smart_app import SmartDeduperApp
 
 
 def main() -> int:
@@ -34,7 +34,7 @@ def main() -> int:
     install_ready_lifecycle(database)
     evidence = EvidenceStore(data_directory / "gparty-evidence.sqlite3")
     store = R2Store(config)
-    app = FastDeduperApp(config, database, store, data_directory, evidence=evidence)
+    app = SmartDeduperApp(config, database, store, data_directory, evidence=evidence)
     app.mainloop()
     return 0
 

@@ -4,6 +4,7 @@ import threading
 
 from .app import DeduperApp
 from .band_scanner import make_band_scanner
+from .cache_view import cached_pairs_for_slider
 from .evidence_capture import capture_pair_evidence
 from .evidence_inventory import reconcile_asset_inventory
 from .evidence_store import EvidenceStore
@@ -18,7 +19,82 @@ class FastDeduperApp(DeduperApp):
     def __init__(self, *args, evidence: EvidenceStore, **kwargs):
         self.scan_cancel = threading.Event()
         self.evidence = evidence
+        self._slider_guard = False
+        self._slider_after_id: str | None = None
         super().__init__(*args, **kwargs)
+        self.slider.trace_add("write", self._slider_changed)
+        self._refresh_index_boundary(apply=False)
+
+    def _slider_changed(self, *_args) -> None:
+        if self._slider_guard:
+            return
+        if self._slider_after_id is not None:
+            self.after_cancel(self._slider_after_id)
+        self._slider_after_id = self.after(180, self._apply_slider_view)
+
+    def _refresh_index_boundary(self, *, apply: bool) -> None:
+        boundary = self.evidence.loosest_complete_slider()
+        requested = int(round(self.slider.get()))
+        if boundary is None:
+            self.comparison_progress.set(
+                "Permanent index: no certified slider positions yet — press SCAN"
+            )
+            return
+        if requested < boundary:
+            self._slider_guard = True
+            try:
+                self.slider.set(boundary)
+            finally:
+                self._slider_guard = False
+            requested = boundary
+        self.comparison_progress.set(
+            f"Permanent index READY: slider {boundary}–99  •  selected {requested}"
+        )
+        if apply and not self.busy:
+            self._apply_slider_view()
+
+    def _apply_slider_view(self) -> None:
+        self._slider_after_id = None
+        if self.busy or self.reverse_delete_busy:
+            return
+        boundary = self.evidence.loosest_complete_slider()
+        if boundary is None:
+            self.status.set("No certified slider positions yet. Press SCAN to begin indexing.")
+            return
+
+        requested = int(round(self.slider.get()))
+        if requested < boundary:
+            self._slider_guard = True
+            try:
+                self.slider.set(boundary)
+            finally:
+                self._slider_guard = False
+            requested = boundary
+            self.status.set(
+                f"Slider clamped to {boundary}; looser positions are still indexing."
+            )
+
+        slider = requested
+
+        def load_view() -> str:
+            assets = self.database.all_hashed_assets()
+            pairs = cached_pairs_for_slider(self.evidence, assets, slider)
+            target_count = self.database.replace_pairs(
+                pairs,
+                preserve_exclusions=True,
+            )
+            self.database.set_matching_state("complete")
+            return (
+                f"READY slider {slider}: {target_count} stable deletion candidates "
+                f"from the certified permanent index."
+            )
+
+        self._run(
+            f"Loading certified slider {slider} view…",
+            load_view,
+            self._refresh_pairs,
+            lock_review=True,
+        )
 
     def start_scan(self) -> None:
         slider = int(round(self.slider.get()))
@@ -54,8 +130,6 @@ class FastDeduperApp(DeduperApp):
             assets = self.database.all_hashed_assets()
             visual_assets, sha_deletions = partition_exact_duplicates(assets)
             sha_target_count = self.database.replace_sha_deletions(sha_deletions)
-            # A new scan resets the temporary visual-review decisions. Exact SHA
-            # groups live in their own invisible queue and never become previews.
             self.database.replace_pairs([])
             self.database.set_matching_state("running")
             self._ui(
@@ -123,13 +197,7 @@ class FastDeduperApp(DeduperApp):
             def index_progress(result) -> None:
                 nonlocal indexed_bands
                 indexed_bands += 1
-                self._ui(
-                    self.status.set,
-                    (
-                        f"Permanent index unlocked through slider {result.band.loosest_slider}; "
-                        f"{result.total_edges:,} evidence edges saved."
-                    ),
-                )
+                self._ui(self._index_band_completed, result)
 
             try:
                 self._ui(
@@ -171,7 +239,18 @@ class FastDeduperApp(DeduperApp):
                 f"index unlocked through slider {boundary_text}; {cache_summary}."
             )
 
-        self._run("Starting parallel scan…", scan, self._refresh_pairs, lock_review=False)
+        self._run("Starting parallel scan…", scan, self._scan_finished, lock_review=False)
+
+    def _scan_finished(self) -> None:
+        self._refresh_index_boundary(apply=True)
+        self._refresh_pairs()
+
+    def _index_band_completed(self, result) -> None:
+        self.status.set(
+            f"Permanent index unlocked through slider {result.band.loosest_slider}; "
+            f"{result.total_edges:,} evidence edges saved."
+        )
+        self._refresh_index_boundary(apply=False)
 
     def _begin_matching_progress(self, totals: dict[str, int], sha_targets: int) -> None:
         self.matching_totals = totals
@@ -248,8 +327,6 @@ class FastDeduperApp(DeduperApp):
         for cancellation in self.preview_cancellations.values():
             cancellation.set()
         self.preview_executor.shutdown(wait=True, cancel_futures=True)
-        # Wait for active workers to leave their current download/decode cleanly before
-        # SQLite is closed. Completed hashes have already been committed individually.
         self.executor.shutdown(wait=True, cancel_futures=True)
         self.evidence.close()
         self.database.close()

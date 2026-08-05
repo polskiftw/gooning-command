@@ -7,6 +7,7 @@ from tkinter import messagebox
 from deduper.app import DeduperApp
 from deduper.config import ConfigError, app_directory, parse_config
 from deduper.database import Database
+from deduper.database_migration import migrate_and_recover
 from deduper.evidence_store import EvidenceStore
 from deduper.r2 import R2Store
 from deduper.ready_lifecycle import install_ready_lifecycle
@@ -31,6 +32,19 @@ def main() -> int:
 
     install_review_ui_hardening(DeduperApp)
     database = Database(data_directory / "gparty-deduper.sqlite3")
+    try:
+        migrate_and_recover(database)
+    except Exception as exc:
+        database.close()
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror(
+            "GParty Deduper database",
+            "The database failed its safety check and was not modified further.\n\n"
+            f"{type(exc).__name__}: {exc}",
+        )
+        root.destroy()
+        return 3
     install_ready_lifecycle(database)
     evidence = EvidenceStore(data_directory / "gparty-evidence.sqlite3")
     store = R2Store(config)

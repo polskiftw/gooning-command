@@ -6,8 +6,8 @@ on:
       - deduper-cache-foundation
   pull_request:
     paths:
-      - "deduper/evidence_store.py"
-      - "tests/test_evidence_store.py"
+      - "deduper/**"
+      - "tests/**"
       - ".github/workflows/deduper-cache-tests.yml"
 
 jobs:
@@ -22,5 +22,5 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Run evidence cache tests
-        run: python -m unittest -v tests.test_evidence_store
+      - name: Run full deduper test suite
+        run: python -m unittest discover -s tests -p "test_*.py" -v

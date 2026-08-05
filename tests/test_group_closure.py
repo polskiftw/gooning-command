@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from deduper.evidence_qualification import record_edge_qualification
+from deduper.evidence_qualification import mark_edges_qualified
 from deduper.evidence_store import EvidenceEdge, EvidenceStore, InventoryRecord
 from deduper.group_closure import (
     certify_closed_groups,
@@ -26,17 +26,15 @@ class GroupClosureTests(unittest.TestCase):
                 InventoryRecord("d", 1, "d1"),
             ]
         )
-        self.store.mark_range_complete(90)
 
     def tearDown(self) -> None:
         self.store.close()
         self.temp.cleanup()
 
     def add_edge(self, left: str, right: str, first_slider: int = 95) -> None:
-        self.store.upsert_edges(
-            [EvidenceEdge(left, right, phash_distance=1, evidence_mask=1)]
-        )
-        record_edge_qualification(self.store, left, right, first_slider)
+        edge = EvidenceEdge(left, right, phash_distance=1, evidence_mask=1)
+        self.store.upsert_edges([edge])
+        mark_edges_qualified(self.store, [edge], first_slider)
 
     def test_partial_component_is_not_ready(self) -> None:
         self.add_edge("a", "b")

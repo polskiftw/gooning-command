@@ -1,4 +1,4 @@
-name: Build GParty Deduper 2
+name: Build GParty Deduper 3
 
 on:
   workflow_dispatch:
@@ -48,7 +48,7 @@ jobs:
         run: |
           python -c "import deduper.main, deduper.smart_app, deduper.focused_matcher, deduper.focused_recertification, deduper.incremental_recertification, deduper.database_migration, deduper.review_ui; print('Packaging imports OK')"
 
-      - name: Build Windows application
+      - name: Build Windows application without UPX
         working-directory: deduper
         run: pyinstaller --clean --noconfirm "GPartyDeduper.spec"
 
@@ -106,6 +106,30 @@ jobs:
             throw "Portable ZIP is unexpectedly small"
           }
 
+      - name: Scan package with Microsoft Defender
+        shell: pwsh
+        run: |
+          $package = (Resolve-Path "deduper/dist/GParty-Deduper-Windows").Path
+          $zip = (Resolve-Path "deduper/dist/GParty-Deduper-Windows.zip").Path
+          $before = @(Get-MpThreatDetection -ErrorAction SilentlyContinue | ForEach-Object ThreatID)
+
+          try {
+            Update-MpSignature -ErrorAction Continue
+            Start-MpScan -ScanType CustomScan -ScanPath $package -ErrorAction Stop
+            Start-MpScan -ScanType CustomScan -ScanPath $zip -ErrorAction Stop
+          } catch {
+            throw "Microsoft Defender scan could not be completed: $($_.Exception.Message)"
+          }
+
+          $after = @(Get-MpThreatDetection -ErrorAction SilentlyContinue)
+          $newThreats = @($after | Where-Object { $_.ThreatID -notin $before })
+          if ($newThreats.Count -gt 0) {
+            $newThreats | Format-List * | Out-String | Write-Host
+            throw "Microsoft Defender detected the packaged application. Artifact upload blocked."
+          }
+
+          Write-Host "Microsoft Defender scan completed with no new detections."
+
       - name: Upload Windows ZIP
         uses: actions/upload-artifact@v6
         with:
@@ -143,13 +167,13 @@ jobs:
             gh release edit windows-latest `
               --latest `
               --title "Latest Windows Build" `
-              --notes "Automatically built and tested from the newest deduper code on main." `
+              --notes "Automatically built, tested, and scanned from the newest deduper code on main." `
               --repo $env:GITHUB_REPOSITORY
           } else {
             gh release create windows-latest $zip `
               --latest `
               --target $env:GITHUB_SHA `
               --title "Latest Windows Build" `
-              --notes "Automatically built and tested from the newest deduper code on main." `
+              --notes "Automatically built, tested, and scanned from the newest deduper code on main." `
               --repo $env:GITHUB_REPOSITORY
           }

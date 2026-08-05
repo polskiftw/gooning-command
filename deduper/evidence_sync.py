@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from .evidence_store import EvidenceStore, InventoryRecord
+from .incremental_recertification import carry_forward_after_removals
 
 
 @dataclass(frozen=True)
@@ -17,12 +18,18 @@ class InventoryDelta:
     def has_changes(self) -> bool:
         return bool(self.added or self.changed or self.removed)
 
+    @property
+    def is_removal_only(self) -> bool:
+        return bool(self.removed) and not self.added and not self.changed
+
 
 @dataclass(frozen=True)
 class ReconcileResult:
     delta: InventoryDelta
     fingerprint: str
     cache_was_current: bool
+    reused_complete_boundary: bool = False
+    recertified_groups: int = 0
 
 
 def _identity(record: InventoryRecord) -> tuple[int, str, str]:
@@ -73,22 +80,42 @@ def reconcile_inventory(
 
     Existing evidence for unchanged assets remains valid. Edges touching changed
     or removed assets are invalidated, while newly added assets begin with no
-    edges. The inventory snapshot is replaced after invalidation.
+    edges. Removal-only changes carry unaffected closure proof forward because a
+    deletion cannot introduce a new duplicate connection. Additions and changed
+    assets still invalidate the global completion boundary until targeted frontier
+    work proves the new relationships.
     """
     materialized = list(current)
     previous = _stored_inventory(evidence)
     delta = inventory_delta(previous, materialized)
     cache_was_current = not delta.has_changes and evidence.inventory_matches(materialized)
+    old_fingerprint = evidence.get_state("inventory_fingerprint")
+    old_boundary = evidence.loosest_complete_slider()
 
     if delta.has_changes:
         for key in sorted(delta.changed | delta.removed):
             evidence.remove_asset(key)
         evidence.set_state("build_status", "dirty")
-        evidence.set_state("loosest_complete_slider", "100")
+        if not delta.is_removal_only:
+            evidence.set_state("loosest_complete_slider", "100")
 
     fingerprint = evidence.replace_inventory_snapshot(materialized)
+    recertified_groups = 0
+    reused_boundary = False
+    if delta.is_removal_only:
+        recertified_groups = carry_forward_after_removals(
+            evidence,
+            delta.removed,
+            old_fingerprint=old_fingerprint,
+            old_boundary=old_boundary,
+            new_fingerprint=fingerprint,
+        )
+        reused_boundary = old_boundary is not None
+
     return ReconcileResult(
         delta=delta,
         fingerprint=fingerprint,
         cache_was_current=cache_was_current,
+        reused_complete_boundary=reused_boundary,
+        recertified_groups=recertified_groups,
     )

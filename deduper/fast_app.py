@@ -23,11 +23,18 @@ class FastDeduperApp(DeduperApp):
         self._slider_after_id: str | None = None
         self._streaming_ready_slider: int | None = None
         self._streaming_ready_pairs = 0
+        self._inventory_verified_for_delete = False
+        self._scan_completed_current_inventory = False
         super().__init__(*args, **kwargs)
         self._install_exclusion_buttons()
         self.slider.trace_add("write", self._slider_changed)
         self._refresh_index_boundary(apply=False)
         self._show_current_pair()
+        self._set_action_state()
+        self._set_review_state(bool(self.pairs))
+        self.status.set(
+            "Safety lock active: run SCAN before NUKE so the current R2 inventory is certified."
+        )
 
     def _install_exclusion_buttons(self) -> None:
         parent = self.exclude_button.master
@@ -48,6 +55,12 @@ class FastDeduperApp(DeduperApp):
             command=self._exclude_permanently,
         )
         self.permanent_exclude_button.pack(fill="x", pady=(5, 0))
+
+    def _set_action_state(self) -> None:
+        super()._set_action_state()
+        if not self._inventory_verified_for_delete:
+            self.nuke_button.configure(state="disabled")
+            self.sha_nuke_button.configure(state="disabled")
 
     def _show_current_pair(self) -> None:
         super()._show_current_pair()
@@ -71,9 +84,13 @@ class FastDeduperApp(DeduperApp):
                 text="EXCLUDE PERMANENTLY",
                 state=state,
             )
+        if not self._inventory_verified_for_delete:
+            self.reverse_delete_button.configure(state="disabled")
 
     def _set_review_state(self, enabled: bool) -> None:
         super()._set_review_state(enabled)
+        if not self._inventory_verified_for_delete:
+            self.reverse_delete_button.configure(state="disabled")
         if not hasattr(self, "permanent_exclude_button"):
             return
         state = "normal" if enabled and not self.review_locked else "disabled"
@@ -81,6 +98,24 @@ class FastDeduperApp(DeduperApp):
         if self.pairs and self.pairs[self.pair_index].status == "excluded":
             self.exclude_button.configure(state="disabled")
             self.permanent_exclude_button.configure(state="disabled")
+
+    def _start_nuke(self, *, sha_only: bool) -> None:
+        if not self._inventory_verified_for_delete:
+            self.status.set(
+                "NUKE is safety-locked. Run a complete, error-free SCAN to certify "
+                "the current R2 inventory first."
+            )
+            return
+        super()._start_nuke(sha_only=sha_only)
+
+    def _delete_left_keep_right(self) -> None:
+        if not self._inventory_verified_for_delete:
+            self.status.set(
+                "Immediate deletion is safety-locked. Run a complete, error-free "
+                "SCAN to certify the current R2 inventory first."
+            )
+            return
+        super()._delete_left_keep_right()
 
     def _advance_after_exclusion(self, message: str) -> None:
         self.status.set(message)
@@ -150,8 +185,9 @@ class FastDeduperApp(DeduperApp):
             finally:
                 self._slider_guard = False
             requested = boundary
+        safety = "  •  NUKE VERIFIED" if self._inventory_verified_for_delete else "  •  NUKE LOCKED"
         self.comparison_progress.set(
-            f"Permanent index READY: slider {boundary}–99  •  selected {requested}"
+            f"Permanent index READY: slider {boundary}–99  •  selected {requested}{safety}"
         )
         if apply and not self.busy:
             self._apply_slider_view()
@@ -206,11 +242,13 @@ class FastDeduperApp(DeduperApp):
         )
 
     def start_scan(self) -> None:
-        # The visible slider is intentionally not read here. SCAN owns its own
-        # strict-to-loose progression; the slider is only a certified-view filter.
         self.scan_cancel.clear()
         self._streaming_ready_slider = None
         self._streaming_ready_pairs = 0
+        self._inventory_verified_for_delete = False
+        self._scan_completed_current_inventory = False
+        self._set_action_state()
+        self._set_review_state(bool(self.pairs))
 
         def scan() -> str:
             self._ui(self.status.set, "Connecting to R2 and reading inventory…")
@@ -236,7 +274,7 @@ class FastDeduperApp(DeduperApp):
             if self.scan_cancel.is_set() and completed < len(pending):
                 return (
                     f"Scan stopped safely. Saved {completed}/{len(pending)} completed objects; "
-                    "unfinished objects will resume next scan."
+                    "unfinished objects will resume next scan. NUKE remains locked."
                 )
 
             assets = self.database.all_hashed_assets()
@@ -311,7 +349,7 @@ class FastDeduperApp(DeduperApp):
                 return (
                     f"Indexing stopped safely after {completed_bands} completed bands and "
                     f"{completed_groups} certified groups; unlocked through slider "
-                    f"{boundary_text}; early READY work remains saved; resume with SCAN."
+                    f"{boundary_text}; early READY work remains saved; NUKE remains locked."
                 )
 
             observed_edges = self.evidence.edge_count()
@@ -327,17 +365,28 @@ class FastDeduperApp(DeduperApp):
                 )
             )
             self.database.set_matching_state("complete")
+            if errors == 0 and boundary == 0:
+                self._scan_completed_current_inventory = True
+                safety_summary = "NUKE unlocked for this app session"
+            elif errors:
+                safety_summary = f"NUKE remains locked because {errors} hash errors remain"
+            else:
+                safety_summary = "NUKE remains locked because the full index is incomplete"
             return (
                 f"Scan complete. {new_count} new, {changed_count} changed, "
                 f"{missing_count} missing, {errors} errors, "
                 f"{sha_target_count} invisible SHA extras, {observed_edges} permanent evidence edges, "
                 f"{completed_groups} certified groups, index unlocked through slider "
-                f"{boundary_text}; {cache_summary}."
+                f"{boundary_text}; {cache_summary}; {safety_summary}."
             )
 
         self._run("Starting independent progressive scan…", scan, self._scan_finished, lock_review=False)
 
     def _scan_finished(self) -> None:
+        if self._scan_completed_current_inventory:
+            self._inventory_verified_for_delete = True
+        self._set_action_state()
+        self._set_review_state(bool(self.pairs))
         self._refresh_index_boundary(apply=True)
         self._refresh_pairs()
 

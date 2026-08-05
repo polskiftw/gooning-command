@@ -42,7 +42,6 @@ def install_review_ui_hardening(app_class: type[Any]) -> None:
     if getattr(app_class, "_review_ui_hardening_installed", False):
         return
 
-    original_refresh_pairs = app_class._refresh_pairs
     original_load_preview = app_class._load_preview
     original_finish_preview = app_class._finish_preview
     original_show_current_pair = app_class._show_current_pair
@@ -66,14 +65,29 @@ def install_review_ui_hardening(app_class: type[Any]) -> None:
         if loaded is None:
             loaded = {}
             self._review_loaded_preview_keys = loaded
-        pending = getattr(self, "_review_pending_preview_keys", None)
+
+        desired = getattr(self, "_review_desired_preview_keys", None)
+        if desired is None:
+            desired = {}
+            self._review_desired_preview_keys = desired
+
+        pending = getattr(self, "_review_pending_preview_requests", None)
         if pending is None:
             pending = {}
-            self._review_pending_preview_keys = pending
-        if loaded.get(widget) == key or pending.get(widget) == key:
+            self._review_pending_preview_requests = pending
+
+        # A navigation request changes what this widget is allowed to display.
+        # Do not trust a prior loaded-key shortcut unless the widget is still
+        # targeting that same key. This prevents a stale image from the previous
+        # pair remaining visible during rapid back/forward navigation.
+        desired[widget] = key
+        if loaded.get(widget) == key:
             return
-        pending[widget] = key
+
         original_load_preview(self, key, widget)
+        request = self.preview_requests.get(widget)
+        if request is not None:
+            pending[(widget, request)] = key
 
     def finish_preview(
         self: Any,
@@ -82,10 +96,22 @@ def install_review_ui_hardening(app_class: type[Any]) -> None:
         preview: Any,
         error: str | None,
     ) -> None:
+        pending = getattr(self, "_review_pending_preview_requests", {})
+        key = pending.pop((widget, request), None)
+        current_request = self.preview_requests.get(widget)
+        desired = getattr(self, "_review_desired_preview_keys", {})
+
+        # Let the base method perform its own request-number guard. Only mark a
+        # key as loaded when this exact completion is still both the newest
+        # request and the key currently desired for this widget.
         original_finish_preview(self, widget, request, preview, error)
-        pending = getattr(self, "_review_pending_preview_keys", {})
-        key = pending.pop(widget, None)
-        if error is None and preview is not None and key is not None:
+        if (
+            request == current_request
+            and key is not None
+            and desired.get(widget) == key
+            and error is None
+            and preview is not None
+        ):
             loaded = getattr(self, "_review_loaded_preview_keys", None)
             if loaded is None:
                 loaded = {}
@@ -95,7 +121,8 @@ def install_review_ui_hardening(app_class: type[Any]) -> None:
     def show_current_pair(self: Any) -> None:
         if not self.pairs:
             getattr(self, "_review_loaded_preview_keys", {}).clear()
-            getattr(self, "_review_pending_preview_keys", {}).clear()
+            getattr(self, "_review_desired_preview_keys", {}).clear()
+            getattr(self, "_review_pending_preview_requests", {}).clear()
         original_show_current_pair(self)
 
     app_class._refresh_pairs = refresh_pairs

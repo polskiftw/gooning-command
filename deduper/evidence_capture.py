@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable
 
+from .evidence_qualification import mark_edges_qualified
 from .evidence_store import EvidenceEdge, EvidenceStore
 from .matcher import crop_similarity, hamming_hex, thresholds, vpdq_similarity
 from .models import Asset
@@ -29,13 +30,7 @@ def evidence_for_pairs(
     pairs: Iterable[tuple[str, str, float, str]],
     slider: int,
 ) -> list[EvidenceEdge]:
-    """Measure durable evidence for already-discovered matcher pairs.
-
-    pHash and PDQ are stored as raw Hamming distances. Crop and vPDQ values are
-    measured with the current matcher parameters and the parameters are recorded
-    in cache state by ``capture_pair_evidence``. This makes the observations safe
-    to retain without claiming they are complete for other slider positions.
-    """
+    """Measure durable evidence for already-discovered matcher pairs."""
     asset_by_key = {asset.key: asset for asset in assets}
     limits = thresholds(slider)
     crop_cutoff = float(limits["crop_distance"])
@@ -99,15 +94,21 @@ def capture_pair_evidence(
     pairs: Iterable[tuple[str, str, float, str]],
     slider: int,
 ) -> int:
-    """Persist observations from the current matcher without unlocking the slider."""
+    """Persist matcher-proven edges without claiming whole-slider completeness.
+
+    Every supplied pair already passed the production matcher at ``slider``, so
+    its edge qualification is safe to record. This enables group-at-a-time
+    closure scheduling. It still does not move the whole-library completion
+    boundary; only the progressive band indexer may do that.
+    """
+    value = max(0, min(99, int(slider)))
     materialized_pairs = list(pairs)
-    edges = evidence_for_pairs(assets, materialized_pairs, slider)
+    edges = evidence_for_pairs(assets, materialized_pairs, value)
     count = evidence.upsert_edges(edges)
-    limits = thresholds(slider)
-    evidence.set_state("last_observed_slider", str(max(0, min(99, int(slider)))))
+    mark_edges_qualified(evidence, edges, value)
+    limits = thresholds(value)
+    evidence.set_state("last_observed_slider", str(value))
     evidence.set_state("last_observed_crop_cutoff", str(float(limits["crop_distance"])))
     evidence.set_state("last_observed_vpdq_distance", str(int(limits["vpdq_distance"])))
     evidence.set_state("observed_edge_count", str(evidence.edge_count()))
-    # These are observations from the legacy matcher, not proof that any slider
-    # range is complete. Never move ``loosest_complete_slider`` here.
     return count

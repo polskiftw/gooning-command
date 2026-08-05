@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from .app import DeduperApp
 from .models import Pair
 
 
@@ -38,17 +37,17 @@ def preserved_pair_index(
     return min(max(0, int(fallback_index)), len(materialized) - 1)
 
 
-def install_review_ui_hardening() -> None:
+def install_review_ui_hardening(app_class: type[Any]) -> None:
     """Install idempotent UI guards for streaming READY queue rebuilds."""
-    if getattr(DeduperApp, "_review_ui_hardening_installed", False):
+    if getattr(app_class, "_review_ui_hardening_installed", False):
         return
 
-    original_refresh_pairs = DeduperApp._refresh_pairs
-    original_load_preview = DeduperApp._load_preview
-    original_finish_preview = DeduperApp._finish_preview
-    original_show_current_pair = DeduperApp._show_current_pair
+    original_refresh_pairs = app_class._refresh_pairs
+    original_load_preview = app_class._load_preview
+    original_finish_preview = app_class._finish_preview
+    original_show_current_pair = app_class._show_current_pair
 
-    def refresh_pairs(self: DeduperApp) -> None:
+    def refresh_pairs(self: Any) -> None:
         old_left = self.left_asset_key
         old_right = self.right_asset_key
         old_index = self.pair_index
@@ -62,7 +61,7 @@ def install_review_ui_hardening() -> None:
         )
         self._show_current_pair()
 
-    def load_preview(self: DeduperApp, key: str, widget: Any) -> None:
+    def load_preview(self: Any, key: str, widget: Any) -> None:
         loaded = getattr(self, "_review_loaded_preview_keys", None)
         if loaded is None:
             loaded = {}
@@ -77,7 +76,7 @@ def install_review_ui_hardening() -> None:
         original_load_preview(self, key, widget)
 
     def finish_preview(
-        self: DeduperApp,
+        self: Any,
         widget: Any,
         request: int,
         preview: Any,
@@ -93,17 +92,14 @@ def install_review_ui_hardening() -> None:
                 self._review_loaded_preview_keys = loaded
             loaded[widget] = key
 
-    def show_current_pair(self: DeduperApp) -> None:
+    def show_current_pair(self: Any) -> None:
         if not self.pairs:
             getattr(self, "_review_loaded_preview_keys", {}).clear()
             getattr(self, "_review_pending_preview_keys", {}).clear()
         original_show_current_pair(self)
 
-    DeduperApp._refresh_pairs = refresh_pairs
-    DeduperApp._load_preview = load_preview
-    DeduperApp._finish_preview = finish_preview
-    DeduperApp._show_current_pair = show_current_pair
-    DeduperApp._review_ui_hardening_installed = True
-
-
-install_review_ui_hardening()
+    app_class._refresh_pairs = refresh_pairs
+    app_class._load_preview = load_preview
+    app_class._finish_preview = finish_preview
+    app_class._show_current_pair = show_current_pair
+    app_class._review_ui_hardening_installed = True

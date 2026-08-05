@@ -71,7 +71,9 @@ jobs:
           }
 
           pyinstaller --version
-          python -m PyInstaller.utils.cliutils.archive_viewer -l $exe | Out-File "deduper/dist/frozen-contents.txt"
+          $pyz = "deduper/build/GPartyDeduper/PYZ-00.pyz"
+          if (!(Test-Path $pyz)) { throw "Missing PyInstaller module archive: $pyz" }
+          python -m PyInstaller.utils.cliutils.archive_viewer -l $pyz | Out-File "deduper/dist/frozen-contents.txt"
           $contents = Get-Content "deduper/dist/frozen-contents.txt" -Raw
           foreach ($module in @(
             "deduper.smart_app",
@@ -82,7 +84,7 @@ jobs:
             "deduper.review_ui"
           )) {
             if ($contents -notmatch [regex]::Escape($module)) {
-              throw "Frozen archive is missing module $module"
+              throw "Frozen module archive is missing $module"
             }
           }
 

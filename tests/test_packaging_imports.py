@@ -7,7 +7,8 @@ import unittest
 PACKAGED_MODULES = (
     "deduper.main",
     "deduper.smart_app",
-    "deduper.incremental_matcher",
+    "deduper.focused_matcher",
+    "deduper.focused_recertification",
     "deduper.incremental_recertification",
     "deduper.database_migration",
     "deduper.review_ui",

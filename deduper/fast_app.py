@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 
 from .app import DeduperApp
-from .cache_view import cached_pairs_for_slider
+from .cache_view import cached_pairs_for_slider, ready_pairs_for_slider
 from .evidence_inventory import reconcile_asset_inventory
 from .evidence_store import EvidenceStore
 from .matcher import partition_exact_duplicates
@@ -20,6 +20,8 @@ class FastDeduperApp(DeduperApp):
         self.evidence = evidence
         self._slider_guard = False
         self._slider_after_id: str | None = None
+        self._streaming_ready_slider: int | None = None
+        self._streaming_ready_pairs = 0
         super().__init__(*args, **kwargs)
         self.slider.trace_add("write", self._slider_changed)
         self._refresh_index_boundary(apply=False)
@@ -35,9 +37,15 @@ class FastDeduperApp(DeduperApp):
         boundary = self.evidence.loosest_complete_slider()
         requested = int(round(self.slider.get()))
         if boundary is None:
-            self.comparison_progress.set(
-                "Permanent index: no certified slider positions yet — press SCAN"
-            )
+            if self._streaming_ready_slider is not None:
+                self.comparison_progress.set(
+                    f"Early READY: {self._streaming_ready_pairs} certified pairs at slider "
+                    f"{self._streaming_ready_slider}; full band still indexing"
+                )
+            else:
+                self.comparison_progress.set(
+                    "Permanent index: no certified slider positions yet — press SCAN"
+                )
             return
         if requested < boundary:
             self._slider_guard = True
@@ -58,7 +66,13 @@ class FastDeduperApp(DeduperApp):
             return
         boundary = self.evidence.loosest_complete_slider()
         if boundary is None:
-            self.status.set("No certified slider positions yet. Press SCAN to begin indexing.")
+            if self._streaming_ready_slider is not None:
+                self.status.set(
+                    "Only early certified groups are available while indexing continues; "
+                    "the slider unlocks after a complete band finishes."
+                )
+            else:
+                self.status.set("No certified slider positions yet. Press SCAN to begin indexing.")
             return
 
         requested = int(round(self.slider.get()))
@@ -99,6 +113,8 @@ class FastDeduperApp(DeduperApp):
         # The visible slider is intentionally not read here. SCAN owns its own
         # strict-to-loose progression; the slider is only a certified-view filter.
         self.scan_cancel.clear()
+        self._streaming_ready_slider = None
+        self._streaming_ready_pairs = 0
 
         def scan() -> str:
             self._ui(self.status.set, "Connecting to R2 and reading inventory…")
@@ -133,22 +149,45 @@ class FastDeduperApp(DeduperApp):
             self.database.set_matching_state("running")
             self._ui(
                 self._set_empty_pair_message,
-                "Indexing from Strict toward Loose…\n\nThe slider only views completed ranges.",
+                "Indexing from Strict toward Loose…\n\nCertified groups will appear here as soon as they close.",
             )
 
             completed_bands = 0
             completed_groups = 0
 
+            def publish_ready_groups(slider: int) -> int:
+                pairs = ready_pairs_for_slider(self.evidence, visual_assets, slider)
+                target_count = self.database.replace_pairs(
+                    pairs,
+                    preserve_exclusions=True,
+                )
+                self._streaming_ready_slider = slider
+                self._streaming_ready_pairs = target_count
+                self._ui(self._refresh_pairs)
+                self._ui(self._refresh_index_boundary, apply=False)
+                return target_count
+
             def group_progress(band, result, seed_count: int) -> None:
                 nonlocal completed_groups
-                if result.group is not None:
-                    completed_groups += 1
+                if result.group is None:
+                    self._ui(
+                        self.status.set,
+                        (
+                            f"Band {band.strictest_slider}–{band.loosest_slider}: "
+                            f"seed {result.seed_key} still open after {seed_count} seeds; "
+                            f"{len(result.members)} discovered members."
+                        ),
+                    )
+                    return
+
+                completed_groups += 1
+                target_count = publish_ready_groups(band.loosest_slider)
                 self._ui(
                     self.status.set,
                     (
-                        f"Band {band.strictest_slider}–{band.loosest_slider}: "
-                        f"closed seed {result.seed_key}; {len(result.members)} members; "
-                        f"{completed_groups} groups completed."
+                        f"CERTIFIED group {completed_groups}: {len(result.group.members)} members "
+                        f"at slider {band.loosest_slider}; {target_count} READY review pairs "
+                        "published while the rest of the band continues."
                     ),
                 )
 
@@ -175,8 +214,8 @@ class FastDeduperApp(DeduperApp):
                 boundary_text = "none" if boundary is None else str(boundary)
                 return (
                     f"Indexing stopped safely after {completed_bands} completed bands and "
-                    f"{completed_groups} closed groups; unlocked through slider "
-                    f"{boundary_text}; resume with SCAN."
+                    f"{completed_groups} certified groups; unlocked through slider "
+                    f"{boundary_text}; early READY work remains saved; resume with SCAN."
                 )
 
             observed_edges = self.evidence.edge_count()
@@ -196,7 +235,7 @@ class FastDeduperApp(DeduperApp):
                 f"Scan complete. {new_count} new, {changed_count} changed, "
                 f"{missing_count} missing, {errors} errors, "
                 f"{sha_target_count} invisible SHA extras, {observed_edges} permanent evidence edges, "
-                f"{completed_groups} closed groups, index unlocked through slider "
+                f"{completed_groups} certified groups, index unlocked through slider "
                 f"{boundary_text}; {cache_summary}."
             )
 
@@ -210,7 +249,7 @@ class FastDeduperApp(DeduperApp):
         group_count = result.group_result.groups_completed
         self.status.set(
             f"Permanent index unlocked through slider {result.band.loosest_slider}; "
-            f"{group_count} groups closed in this band; "
+            f"{group_count} groups certified in this band; "
             f"{result.total_edges:,} evidence edges saved."
         )
         self._refresh_index_boundary(apply=False)

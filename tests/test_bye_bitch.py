@@ -54,6 +54,32 @@ class FakeDatabase:
         raise AssertionError("unexpected index cleanup")
 
 
+class FakeRepairQueue:
+    def __init__(self):
+        self.next_id = 1
+        self.enqueued = []
+        self.running = []
+        self.completed = []
+        self.pending = []
+
+    def enqueue(self, deleted_key, protected_key, priority_keys):
+        repair_id = self.next_id
+        self.next_id += 1
+        self.enqueued.append(
+            (repair_id, deleted_key, protected_key, tuple(priority_keys))
+        )
+        return repair_id
+
+    def mark_running(self, repair_id):
+        self.running.append(repair_id)
+
+    def complete(self, repair_id):
+        self.completed.append(repair_id)
+
+    def mark_pending(self, repair_id):
+        self.pending.append(repair_id)
+
+
 class Harness(ByeBitchMixin):
     def __init__(self, queue, pairs, assets):
         self.config = SimpleNamespace(allow_delete=True)
@@ -64,6 +90,7 @@ class Harness(ByeBitchMixin):
         self.pair_index = 0
         self._active_certified_queue = queue
         self.database = FakeDatabase(assets)
+        self._family_repair_queue = FakeRepairQueue()
         self.store = FakeStore()
         self.executor = ImmediateExecutor()
         self.status = FakeStatus()
@@ -90,8 +117,9 @@ class Harness(ByeBitchMixin):
     def _ui(self, callback, *args):
         callback(*args)
 
-    def _recertify_bye_bitch_family(self, keys):
-        self.recertify_calls.append(tuple(keys))
+    def _recertify_bye_bitch_family(self, repair_id, keys):
+        self.recertify_calls.append((repair_id, tuple(keys)))
+        self._family_repair_queue.complete(repair_id)
 
 
 def asset(key):
@@ -136,7 +164,8 @@ class ByeBitchBehaviorTests(unittest.TestCase):
 
         self.assertEqual(app.store.deleted, ["A"])
         self.assertEqual(app.database.reverse_records[0][:2], ("A", "1"))
-        self.assertEqual(app.recertify_calls, [("1", "2")])
+        self.assertEqual(app._family_repair_queue.enqueued[0][1:], ("A", "1", ("1", "2")))
+        self.assertEqual(app.recertify_calls, [(1, ("1", "2"))])
         self.assertEqual(app.database.projected, [("B", "3", 79.0, "match")])
         self.assertIsNone(app._active_certified_queue.family_for_asset("1"))
         self.assertIsNotNone(app._active_certified_queue.family_for_asset("B"))
@@ -148,7 +177,8 @@ class ByeBitchBehaviorTests(unittest.TestCase):
 
         self.assertEqual(app.store.deleted, ["1"])
         self.assertEqual(app.database.reverse_records[0][:2], ("1", "A"))
-        self.assertEqual(app.recertify_calls, [("A", "2")])
+        self.assertEqual(app._family_repair_queue.enqueued[0][1:], ("1", "A", ("A", "2")))
+        self.assertEqual(app.recertify_calls, [(1, ("A", "2"))])
         self.assertEqual(app.database.projected, [("B", "3", 79.0, "match")])
 
     def test_actions_do_nothing_until_inventory_validation_succeeds(self):
@@ -159,6 +189,7 @@ class ByeBitchBehaviorTests(unittest.TestCase):
 
         self.assertEqual(app.store.deleted, [])
         self.assertEqual(app.database.reverse_records, [])
+        self.assertEqual(app._family_repair_queue.enqueued, [])
         self.assertEqual(app.recertify_calls, [])
 
 

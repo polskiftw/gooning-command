@@ -48,6 +48,16 @@ class FamilyRecertificationSchemaMigrationTests(unittest.TestCase):
             self.assertNotIn('family_repair_members', names)
             self.assertIn('family_recertification_jobs', names)
             self.assertIn('family_recertification_members', names)
+            member_columns = {
+                row['name']
+                for row in db.connection.execute(
+                    "PRAGMA table_info(family_recertification_members)"
+                )
+            }
+            self.assertEqual(
+                member_columns,
+                {'recertification_id', 'priority', 'asset_key'},
+            )
             FamilyRecertificationQueue(db)
             db.close()
 

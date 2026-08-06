@@ -10,6 +10,7 @@ class NativeReviewUiArchitectureTests(unittest.TestCase):
         self.assertNotIn("install_review_ui_hardening", main + review)
         self.assertIn("_review_desired_preview_keys", app)
         self.assertIn("preserved_pair_index", app)
+        self.assertNotIn("_review_ui_hardening_installed", app + review)
 
 
 if __name__ == "__main__":

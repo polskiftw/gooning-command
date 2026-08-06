@@ -10,9 +10,11 @@ from .startup_validation import (
     StartupValidationCoordinator,
     startup_status_text,
 )
+from .survivor_policy import matcher_identity
 
 
 class AppLike(Protocol):
+    config: object
     database: object
     store: object
     slider: object
@@ -45,6 +47,7 @@ class GenerationAppLifecycle:
     def install(self) -> "GenerationAppLifecycle":
         active = self.startup.active_generation
         self.app._inventory_verified_for_delete = False
+        configured_matcher = matcher_identity(self.app.config.survivor_policy)
 
         if active is not None and active.identity is not None:
             self._project_active_generation()
@@ -56,6 +59,7 @@ class GenerationAppLifecycle:
                 self.startup.store,
                 self.app.store,
                 active.identity.slider_value,
+                matcher_version=configured_matcher,
             )
         else:
             self.app.status.set(
@@ -65,6 +69,7 @@ class GenerationAppLifecycle:
                 self.startup.store,
                 self.app.store,
                 int(round(self.app.slider.get())),
+                matcher_version=configured_matcher,
             )
 
         self._refresh_controls()

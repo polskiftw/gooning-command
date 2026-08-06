@@ -61,6 +61,45 @@ class FamilyRecertificationSchemaMigrationTests(unittest.TestCase):
             FamilyRecertificationQueue(db)
             db.close()
 
+    def test_partial_modern_table_missing_status_is_repaired_before_indexing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db = CertifiedDatabase(Path(directory) / "deduper.sqlite3")
+            with db.connection:
+                db.connection.executescript("""
+                    CREATE TABLE family_recertification_jobs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        deleted_key TEXT NOT NULL,
+                        protected_key TEXT NOT NULL
+                    );
+                    CREATE TABLE family_recertification_members (
+                        recertification_id INTEGER NOT NULL,
+                        priority INTEGER NOT NULL,
+                        asset_key TEXT NOT NULL,
+                        PRIMARY KEY (recertification_id, asset_key),
+                        UNIQUE (recertification_id, priority)
+                    );
+                    INSERT INTO family_recertification_jobs
+                        (id, deleted_key, protected_key)
+                    VALUES (9, 'gone-early.jpg', 'keep-early.jpg');
+                    INSERT INTO family_recertification_members
+                        (recertification_id, priority, asset_key)
+                    VALUES (9, 0, 'keep-early.jpg');
+                """)
+            queue = FamilyRecertificationQueue(db)
+            pending = queue.pending()
+            self.assertEqual(len(pending), 1)
+            self.assertEqual(pending[0].recertification_id, 9)
+            self.assertEqual(pending[0].status, 'pending')
+            columns = {row['name'] for row in db.connection.execute(
+                "PRAGMA table_info(family_recertification_jobs)"
+            )}
+            self.assertIn('status', columns)
+            indexes = {row['name'] for row in db.connection.execute(
+                "PRAGMA index_list(family_recertification_jobs)"
+            )}
+            self.assertIn('family_recertification_status_idx', indexes)
+            db.close()
+
 
 if __name__ == '__main__':
     unittest.main()

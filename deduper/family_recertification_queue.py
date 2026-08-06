@@ -40,6 +40,10 @@ class FamilyRecertificationQueue:
         return row is not None
 
     def _create_current_schema(self) -> None:
+        # Create only the base tables first. Existing prerelease databases may
+        # already contain a partial version of the modern table, and SQLite's
+        # CREATE TABLE IF NOT EXISTS will not add its missing columns. Indexes
+        # must therefore be created only after every required column exists.
         self.database.connection.executescript(
             """
             CREATE TABLE IF NOT EXISTS family_recertification_jobs (
@@ -61,8 +65,6 @@ class FamilyRecertificationQueue:
                 PRIMARY KEY (recertification_id, asset_key),
                 UNIQUE (recertification_id, priority)
             );
-            CREATE INDEX IF NOT EXISTS family_recertification_status_idx
-                ON family_recertification_jobs(status, id);
             """
         )
         columns = {
@@ -71,19 +73,26 @@ class FamilyRecertificationQueue:
                 "PRAGMA table_info(family_recertification_jobs)"
             ).fetchall()
         }
-        if "attempt_count" not in columns:
-            self.database.connection.execute(
-                "ALTER TABLE family_recertification_jobs "
-                "ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0"
-            )
-        if "last_error" not in columns:
-            self.database.connection.execute(
-                "ALTER TABLE family_recertification_jobs ADD COLUMN last_error TEXT"
-            )
-        if "last_attempt_at" not in columns:
-            self.database.connection.execute(
-                "ALTER TABLE family_recertification_jobs ADD COLUMN last_attempt_at TEXT"
-            )
+        additions = (
+            ("status", "TEXT NOT NULL DEFAULT 'pending'"),
+            ("attempt_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("last_error", "TEXT"),
+            ("last_attempt_at", "TEXT"),
+            ("created_at", "TEXT"),
+            ("completed_at", "TEXT"),
+        )
+        for name, declaration in additions:
+            if name not in columns:
+                self.database.connection.execute(
+                    f"ALTER TABLE family_recertification_jobs ADD COLUMN {name} {declaration}"
+                )
+
+        self.database.connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS family_recertification_status_idx
+            ON family_recertification_jobs(status, id)
+            """
+        )
 
     def _migrate_legacy_schema(self) -> None:
         legacy_jobs = self._table_exists("family_repair_jobs")

@@ -9,6 +9,7 @@ from .frontier_worker import FrontierResult
 from .generation_builder import CertifiedPairRow
 from .evidence_store import EvidenceStore
 from .models import Asset
+from .survivor_policy import SurvivorPolicy
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,8 @@ def admit_closed_frontier_group(
     evidence: EvidenceStore,
     assets: Iterable[Asset],
     result: FrontierResult,
+    *,
+    survivor_policy: SurvivorPolicy = SurvivorPolicy.BALANCED,
 ) -> AdmissionResult:
     """Admit one completely closed family and never an unfinished frontier.
 
@@ -36,7 +39,12 @@ def admit_closed_frontier_group(
 
     group = result.group
     member_keys = set(group.members)
-    ready_pairs = ready_pairs_for_slider(evidence, assets, group.slider)
+    ready_pairs = ready_pairs_for_slider(
+        evidence,
+        assets,
+        group.slider,
+        survivor_policy=survivor_policy,
+    )
     family_rows = tuple(
         CertifiedPairRow(
             group_id=group.group_id,

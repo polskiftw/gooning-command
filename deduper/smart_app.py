@@ -21,9 +21,6 @@ class SmartDeduperApp(FastDeduperApp):
         self._inventory_verified_for_delete = False
         self._scan_completed_current_inventory = False
 
-        # Review rows from an interrupted/older scan must never be presented as
-        # CERTIFIED for this new session. They are disposable UI projections and
-        # are repopulated only from whole, closed, immutable certified families.
         self.database.replace_pairs([], preserve_exclusions=True)
         self._refresh_pairs()
         self._set_action_state()
@@ -76,14 +73,28 @@ class SmartDeduperApp(FastDeduperApp):
                 "survivor, and deletion relationships cannot change.",
             )
 
+            repair_queue = getattr(self, "_family_repair_queue", None)
+            pending_repairs = repair_queue.pending() if repair_queue is not None else ()
+            repair_focus_keys = {
+                key
+                for repair in pending_repairs
+                for key in repair.priority_keys
+                if key in live_keys
+            }
             delta = evidence_sync.delta
-            focus_keys = set(delta.added) | set(delta.changed)
+            focus_keys = set(delta.added) | set(delta.changed) | repair_focus_keys
             incremental = None
             if errors == 0 and focus_keys and old_boundary is not None and old_fingerprint:
-                self._ui(
-                    self.status.set,
-                    f"Focused incremental comparison for {len(focus_keys)} new/changed objects…",
-                )
+                if repair_focus_keys:
+                    self._ui(
+                        self.status.set,
+                        f"Repairing {len(repair_focus_keys)} protected family survivors first…",
+                    )
+                else:
+                    self._ui(
+                        self.status.set,
+                        f"Focused incremental comparison for {len(focus_keys)} new/changed objects…",
+                    )
                 try:
                     incremental = recertify_added_or_changed_assets(
                         self.evidence,
@@ -216,6 +227,9 @@ class SmartDeduperApp(FastDeduperApp):
             if errors == 0 and boundary == 0:
                 self._scan_completed_current_inventory = True
                 safety_summary = "NUKE unlocked for this app session"
+                if repair_queue is not None:
+                    for repair in pending_repairs:
+                        repair_queue.complete(repair.repair_id)
             elif errors:
                 safety_summary = f"NUKE remains locked because {errors} hash errors remain"
             else:

@@ -1,0 +1,28 @@
+name: Fix Recertification Partial Schema Once
+
+on:
+  push:
+    branches:
+      - deduper-cache-foundation
+    paths:
+      - "tools/fix_recertification_partial_schema_once.py"
+      - ".github/workflows/fix-recertification-partial-schema-once.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: python tools/fix_recertification_partial_schema_once.py
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/fix-recertification-partial-schema-once.yml tools/fix_recertification_partial_schema_once.py
+          git add deduper/family_recertification_queue.py tests/test_family_recertification_schema_migration.py
+          git commit -m "Repair partial recertification schema before indexing"
+          git push origin HEAD:deduper-cache-foundation

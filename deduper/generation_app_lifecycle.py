@@ -139,11 +139,3 @@ class GenerationAppLifecycle:
         self.app._set_review_state(bool(self.app.pairs))
         self.app._refresh_index_boundary(apply=False)
 
-
-def attach_generation_lifecycle(
-    app: AppLike,
-    startup: GenerationStartupState,
-) -> GenerationAppLifecycle:
-    lifecycle = GenerationAppLifecycle(app, startup).install()
-    app._generation_lifecycle = lifecycle
-    return lifecycle

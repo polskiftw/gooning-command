@@ -10,7 +10,6 @@ from deduper.config import ConfigError, app_directory, parse_config
 from deduper.database_migration import migrate_and_recover
 from deduper.evidence_contract import enforce_evidence_contract
 from deduper.evidence_store import EvidenceStore
-from deduper.generation_app_lifecycle import attach_generation_lifecycle
 from deduper.generation_integration import initialize_generation_storage
 from deduper.r2 import R2Store
 
@@ -48,8 +47,14 @@ def main() -> int:
     evidence = EvidenceStore(data_directory / "gparty-evidence.sqlite3")
     enforce_evidence_contract(evidence)
     store = R2Store(config)
-    app = CertifiedDeduperApp(config, database, store, data_directory, evidence=evidence)
-    attach_generation_lifecycle(app, generation_startup)
+    app = CertifiedDeduperApp(
+        config,
+        database,
+        store,
+        data_directory,
+        evidence=evidence,
+        generation_startup=generation_startup,
+    )
     app.mainloop()
     return 0
 

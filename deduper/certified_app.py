@@ -7,6 +7,8 @@ from .evidence_inventory import reconcile_asset_inventory
 from .family_repair_queue import FamilyRepairQueue
 from .family_repair_status import family_repair_status_text
 from .frontier_worker import scan_closed_group
+from .generation_app_lifecycle import GenerationAppLifecycle
+from .generation_integration import GenerationStartupState
 from .matcher import partition_exact_duplicates
 from .smart_app import SmartDeduperApp
 
@@ -14,10 +16,19 @@ from .smart_app import SmartDeduperApp
 class CertifiedDeduperApp(SmartDeduperApp):
     """Concrete production app owning certified review and BYE BITCH behavior."""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(
+        self,
+        *args,
+        generation_startup: GenerationStartupState,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self._family_repair_queue = FamilyRepairQueue(self.database)
         self.after(1000, self._resume_pending_family_repairs)
+        self._generation_lifecycle = GenerationAppLifecycle(
+            self,
+            generation_startup,
+        ).install()
 
     def _resume_pending_family_repairs(self) -> None:
         pending = self._family_repair_queue.pending()

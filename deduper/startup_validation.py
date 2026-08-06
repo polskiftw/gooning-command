@@ -6,6 +6,7 @@ from enum import Enum
 from typing import Callable, Protocol
 
 from .generation_identity import (
+    MATCHER_VERSION,
     GenerationValidation,
     ValidationState,
     build_generation_identity,
@@ -62,10 +63,13 @@ class StartupValidationCoordinator:
         generations: GenerationStore,
         inventory_source: InventorySource,
         slider_value: int,
+        *,
+        matcher_version: str = MATCHER_VERSION,
     ) -> None:
         self.generations = generations
         self.inventory_source = inventory_source
         self.slider_value = slider_value
+        self.matcher_version = matcher_version
         self._lock = threading.RLock()
         self._cancelled = threading.Event()
         self._thread: threading.Thread | None = None
@@ -107,7 +111,11 @@ class StartupValidationCoordinator:
         with self._lock:
             if self._cancelled.is_set():
                 return self._set_cancelled()
-            current_identity = build_generation_identity(inventory, self.slider_value)
+            current_identity = build_generation_identity(
+                inventory,
+                self.slider_value,
+                matcher_version=self.matcher_version,
+            )
             validation = validate_generation(
                 self._snapshot.saved_generation,
                 current_identity,

@@ -5,8 +5,8 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
-class PendingFamilyRepair:
-    repair_id: int
+class PendingFamilyRecertification:
+    recertification_id: int
     deleted_key: str
     protected_key: str
     priority_keys: tuple[str, ...]
@@ -15,8 +15,13 @@ class PendingFamilyRepair:
     last_error: str | None
 
 
-class FamilyRepairQueue:
-    """Crash-safe priority queue for BYE BITCH family recertification."""
+class FamilyRecertificationQueue:
+    """Crash-safe priority queue for BYE BITCH family recertification.
+
+    The SQLite table names retain their historical ``family_repair_*`` spelling
+    solely for in-place database compatibility. They are private storage names,
+    not current product terminology.
+    """
 
     OPEN_STATUSES = ("pending", "running", "retry")
 
@@ -38,14 +43,14 @@ class FamilyRepairQueue:
                 );
 
                 CREATE TABLE IF NOT EXISTS family_repair_members (
-                    repair_id INTEGER NOT NULL REFERENCES family_repair_jobs(id) ON DELETE CASCADE,
+                    recertification_id INTEGER NOT NULL REFERENCES family_repair_jobs(id) ON DELETE CASCADE,
                     priority INTEGER NOT NULL,
                     asset_key TEXT NOT NULL,
-                    PRIMARY KEY (repair_id, asset_key),
-                    UNIQUE (repair_id, priority)
+                    PRIMARY KEY (recertification_id, asset_key),
+                    UNIQUE (recertification_id, priority)
                 );
 
-                CREATE INDEX IF NOT EXISTS family_repair_status_idx
+                CREATE INDEX IF NOT EXISTS family_recertification_status_idx
                     ON family_repair_jobs(status, id);
                 """
             )
@@ -68,13 +73,13 @@ class FamilyRepairQueue:
                     "ALTER TABLE family_repair_jobs ADD COLUMN last_attempt_at TEXT"
                 )
 
-            # A process that died while repairing leaves a running lease behind.
+            # A process that died while recertifying leaves a running lease behind.
             # Make that interruption explicit and retryable after restart.
             self.database.connection.execute(
                 """
                 UPDATE family_repair_jobs
                 SET status = 'retry',
-                    last_error = COALESCE(last_error, 'Application closed during family repair')
+                    last_error = COALESCE(last_error, 'Application closed during family recertification')
                 WHERE status = 'running'
                 """
             )
@@ -101,15 +106,15 @@ class FamilyRepairQueue:
                 """
             )
 
-    def _priority_keys(self, repair_id: int) -> tuple[str, ...]:
+    def _priority_keys(self, recertification_id: int) -> tuple[str, ...]:
         rows = self.database.connection.execute(
             """
             SELECT asset_key
             FROM family_repair_members
-            WHERE repair_id = ?
+            WHERE recertification_id = ?
             ORDER BY priority
             """,
-            (repair_id,),
+            (recertification_id,),
         ).fetchall()
         return tuple(str(row["asset_key"]) for row in rows)
 
@@ -121,11 +126,11 @@ class FamilyRepairQueue:
     ) -> int:
         ordered = tuple(dict.fromkeys(priority_keys))
         if not ordered:
-            raise ValueError("family repair requires at least one surviving asset")
+            raise ValueError("family recertification requires at least one surviving asset")
         if ordered[0] != protected_key:
-            raise ValueError("protected key must be first in family repair priority")
+            raise ValueError("protected key must be first in family recertification priority")
         if deleted_key in ordered:
-            raise ValueError("deleted key cannot be queued for family repair")
+            raise ValueError("deleted key cannot be queued for family recertification")
 
         with self.database._lock, self.database.connection:
             existing = self.database.connection.execute(
@@ -137,12 +142,12 @@ class FamilyRepairQueue:
                 (deleted_key,),
             ).fetchone()
             if existing is not None:
-                repair_id = int(existing["id"])
+                recertification_id = int(existing["id"])
                 if str(existing["protected_key"]) != protected_key:
-                    raise ValueError("unfinished family repair has a different protected partner")
-                if self._priority_keys(repair_id) != ordered:
-                    raise ValueError("unfinished family repair has a different priority order")
-                return repair_id
+                    raise ValueError("unfinished family recertification has a different protected partner")
+                if self._priority_keys(recertification_id) != ordered:
+                    raise ValueError("unfinished family recertification has a different priority order")
+                return recertification_id
 
             cursor = self.database.connection.execute(
                 """
@@ -151,20 +156,20 @@ class FamilyRepairQueue:
                 """,
                 (deleted_key, protected_key),
             )
-            repair_id = int(cursor.lastrowid)
+            recertification_id = int(cursor.lastrowid)
             self.database.connection.executemany(
                 """
-                INSERT INTO family_repair_members (repair_id, priority, asset_key)
+                INSERT INTO family_repair_members (recertification_id, priority, asset_key)
                 VALUES (?, ?, ?)
                 """,
                 (
-                    (repair_id, priority, asset_key)
+                    (recertification_id, priority, asset_key)
                     for priority, asset_key in enumerate(ordered)
                 ),
             )
-        return repair_id
+        return recertification_id
 
-    def pending(self) -> tuple[PendingFamilyRepair, ...]:
+    def pending(self) -> tuple[PendingFamilyRecertification, ...]:
         with self.database._lock:
             jobs = self.database.connection.execute(
                 """
@@ -177,8 +182,8 @@ class FamilyRepairQueue:
             results = []
             for job in jobs:
                 results.append(
-                    PendingFamilyRepair(
-                        repair_id=int(job["id"]),
+                    PendingFamilyRecertification(
+                        recertification_id=int(job["id"]),
                         deleted_key=str(job["deleted_key"]),
                         protected_key=str(job["protected_key"]),
                         priority_keys=self._priority_keys(int(job["id"])),
@@ -189,7 +194,7 @@ class FamilyRepairQueue:
                 )
         return tuple(results)
 
-    def mark_running(self, repair_id: int) -> bool:
+    def mark_running(self, recertification_id: int) -> bool:
         """Atomically claim pending/retry work; only one caller can succeed."""
         with self.database._lock, self.database.connection:
             cursor = self.database.connection.execute(
@@ -201,13 +206,13 @@ class FamilyRepairQueue:
                     last_attempt_at = CURRENT_TIMESTAMP
                 WHERE id = ? AND status IN ('pending', 'retry')
                 """,
-                (repair_id,),
+                (recertification_id,),
             )
         return cursor.rowcount == 1
 
-    def mark_pending(self, repair_id: int, error: str | None = None) -> None:
+    def mark_pending(self, recertification_id: int, error: str | None = None) -> None:
         """Release a claim for retry while preserving the visible failure reason."""
-        message = error[:1000] if error else "Family repair did not finish"
+        message = error[:1000] if error else "Family recertification did not finish"
         with self.database._lock, self.database.connection:
             self.database.connection.execute(
                 """
@@ -215,10 +220,10 @@ class FamilyRepairQueue:
                 SET status = 'retry', last_error = ?
                 WHERE id = ? AND status = 'running'
                 """,
-                (message, repair_id),
+                (message, recertification_id),
             )
 
-    def complete(self, repair_id: int) -> None:
+    def complete(self, recertification_id: int) -> None:
         with self.database._lock, self.database.connection:
             self.database.connection.execute(
                 """
@@ -226,7 +231,7 @@ class FamilyRepairQueue:
                 SET status = 'complete', completed_at = CURRENT_TIMESTAMP, last_error = NULL
                 WHERE id = ?
                 """,
-                (repair_id,),
+                (recertification_id,),
             )
 
     def has_pending(self) -> bool:

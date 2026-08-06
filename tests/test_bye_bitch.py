@@ -63,20 +63,20 @@ class FakeRepairQueue:
         self.retry = []
 
     def enqueue(self, deleted_key, protected_key, priority_keys):
-        repair_id = self.next_id
+        recertification_id = self.next_id
         self.next_id += 1
-        self.enqueued.append((repair_id, deleted_key, protected_key, tuple(priority_keys)))
-        return repair_id
+        self.enqueued.append((recertification_id, deleted_key, protected_key, tuple(priority_keys)))
+        return recertification_id
 
-    def mark_running(self, repair_id):
-        self.running.append(repair_id)
+    def mark_running(self, recertification_id):
+        self.running.append(recertification_id)
         return True
 
-    def complete(self, repair_id):
-        self.completed.append(repair_id)
+    def complete(self, recertification_id):
+        self.completed.append(recertification_id)
 
-    def mark_pending(self, repair_id, error=None):
-        self.retry.append((repair_id, error))
+    def mark_pending(self, recertification_id, error=None):
+        self.retry.append((recertification_id, error))
 
     def pending(self):
         return ()
@@ -92,7 +92,7 @@ class Harness(CertifiedDeduperApp):
         self.pair_index = 0
         self._active_certified_queue = queue
         self.database = FakeDatabase(assets)
-        self._family_repair_queue = FakeRepairQueue()
+        self._family_recertification_queue = FakeRepairQueue()
         self.store = FakeStore()
         self.executor = ImmediateExecutor()
         self.status = FakeStatus()
@@ -119,9 +119,9 @@ class Harness(CertifiedDeduperApp):
     def _ui(self, callback, *args):
         callback(*args)
 
-    def _recertify_bye_bitch_family(self, repair_id, keys):
-        self.recertify_calls.append((repair_id, tuple(keys)))
-        self._family_repair_queue.complete(repair_id)
+    def _recertify_bye_bitch_family(self, recertification_id, keys):
+        self.recertify_calls.append((recertification_id, tuple(keys)))
+        self._family_recertification_queue.complete(recertification_id)
 
 
 def asset(key):
@@ -164,7 +164,7 @@ class ByeBitchBehaviorTests(unittest.TestCase):
         app._bye_bitch("left")
         self.assertEqual(app.store.deleted, ["A"])
         self.assertEqual(app.database.reverse_records[0][:2], ("A", "1"))
-        self.assertEqual(app._family_repair_queue.enqueued[0][1:], ("A", "1", ("1", "2")))
+        self.assertEqual(app._family_recertification_queue.enqueued[0][1:], ("A", "1", ("1", "2")))
         self.assertEqual(app.recertify_calls, [(1, ("1", "2"))])
         self.assertEqual(app.database.projected, [("B", "3", 79.0, "match")])
         self.assertIsNone(app._active_certified_queue.family_for_asset("1"))
@@ -175,7 +175,7 @@ class ByeBitchBehaviorTests(unittest.TestCase):
         app._bye_bitch("right")
         self.assertEqual(app.store.deleted, ["1"])
         self.assertEqual(app.database.reverse_records[0][:2], ("1", "A"))
-        self.assertEqual(app._family_repair_queue.enqueued[0][1:], ("1", "A", ("A", "2")))
+        self.assertEqual(app._family_recertification_queue.enqueued[0][1:], ("1", "A", ("A", "2")))
         self.assertEqual(app.recertify_calls, [(1, ("A", "2"))])
         self.assertEqual(app.database.projected, [("B", "3", 79.0, "match")])
 
@@ -185,7 +185,7 @@ class ByeBitchBehaviorTests(unittest.TestCase):
         app._bye_bitch("left")
         self.assertEqual(app.store.deleted, [])
         self.assertEqual(app.database.reverse_records, [])
-        self.assertEqual(app._family_repair_queue.enqueued, [])
+        self.assertEqual(app._family_recertification_queue.enqueued, [])
         self.assertEqual(app.recertify_calls, [])
 
     def test_concrete_app_has_single_inheritance_owner(self):

@@ -4,8 +4,8 @@ from tkinter import ttk
 
 from .certified_group_admission import admit_closed_frontier_group, preview_projection
 from .evidence_inventory import reconcile_asset_inventory
-from .family_repair_queue import FamilyRepairQueue
-from .family_repair_status import family_repair_status_text
+from .family_recertification_queue import FamilyRecertificationQueue
+from .family_recertification_status import family_recertification_status_text
 from .frontier_worker import scan_closed_group
 from .generation_app_lifecycle import GenerationAppLifecycle
 from .generation_integration import GenerationStartupState
@@ -23,21 +23,21 @@ class CertifiedDeduperApp(SmartDeduperApp):
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
-        self._family_repair_queue = FamilyRepairQueue(self.database)
-        self.after(1000, self._resume_pending_family_repairs)
+        self._family_recertification_queue = FamilyRecertificationQueue(self.database)
+        self.after(1000, self._resume_pending_family_recertifications)
         self._generation_lifecycle = GenerationAppLifecycle(
             self,
             generation_startup,
         ).install()
 
-    def _resume_pending_family_repairs(self) -> None:
-        pending = self._family_repair_queue.pending()
+    def _resume_pending_family_recertifications(self) -> None:
+        pending = self._family_recertification_queue.pending()
         if not pending:
             return
         if self.busy or self.reverse_delete_busy:
-            self.after(1000, self._resume_pending_family_repairs)
+            self.after(1000, self._resume_pending_family_recertifications)
             return
-        self.status.set(family_repair_status_text(pending[0]))
+        self.status.set(family_recertification_status_text(pending[0]))
         self.start_scan()
 
     def _set_review_state(self, enabled: bool) -> None:
@@ -105,7 +105,7 @@ class CertifiedDeduperApp(SmartDeduperApp):
                 if member not in {deleted_key, protected_key}
             )
         )
-        repair_id = self._family_repair_queue.enqueue(
+        recertification_id = self._family_recertification_queue.enqueue(
             deleted_key,
             protected_key,
             priority_keys,
@@ -135,7 +135,7 @@ class CertifiedDeduperApp(SmartDeduperApp):
                 if index_error:
                     self.database.queue_index_cleanup(deleted)
                 if not deleted:
-                    self._family_repair_queue.complete(repair_id)
+                    self._family_recertification_queue.complete(recertification_id)
                     self._ui(
                         self._bye_bitch_finished,
                         None,
@@ -161,13 +161,13 @@ class CertifiedDeduperApp(SmartDeduperApp):
                     message += " Gallery index cleanup was saved for automatic retry."
                 self._ui(
                     self._bye_bitch_finished,
-                    repair_id,
+                    recertification_id,
                     invalidation.recertify_keys,
                     message,
                 )
             except Exception as exc:
                 error = f"{type(exc).__name__}: {exc}"
-                self._family_repair_queue.mark_pending(repair_id, error)
+                self._family_recertification_queue.mark_pending(recertification_id, error)
                 self._ui(
                     self._bye_bitch_finished,
                     None,
@@ -179,7 +179,7 @@ class CertifiedDeduperApp(SmartDeduperApp):
 
     def _bye_bitch_finished(
         self,
-        repair_id: int | None,
+        recertification_id: int | None,
         recertify_keys: tuple[str, ...] | None,
         message: str,
     ) -> None:
@@ -189,32 +189,32 @@ class CertifiedDeduperApp(SmartDeduperApp):
         self._refresh_pairs()
         self._set_action_state()
         self._set_review_state(bool(self.pairs))
-        if repair_id is not None and recertify_keys:
+        if recertification_id is not None and recertify_keys:
             self.executor.submit(
                 self._recertify_bye_bitch_family,
-                repair_id,
+                recertification_id,
                 recertify_keys,
             )
 
     def _recertify_bye_bitch_family(
         self,
-        repair_id: int,
+        recertification_id: int,
         priority_keys: tuple[str, ...],
     ) -> None:
-        if not self._family_repair_queue.mark_running(repair_id):
+        if not self._family_recertification_queue.mark_running(recertification_id):
             pending = {
-                job.repair_id: job for job in self._family_repair_queue.pending()
+                job.recertification_id: job for job in self._family_recertification_queue.pending()
             }
-            current = pending.get(repair_id)
+            current = pending.get(recertification_id)
             if current is not None:
-                self._ui(self.status.set, family_repair_status_text(current))
+                self._ui(self.status.set, family_recertification_status_text(current))
             return
 
         running = {
-            job.repair_id: job for job in self._family_repair_queue.pending()
-        }.get(repair_id)
+            job.recertification_id: job for job in self._family_recertification_queue.pending()
+        }.get(recertification_id)
         if running is not None:
-            self._ui(self.status.set, family_repair_status_text(running))
+            self._ui(self.status.set, family_recertification_status_text(running))
 
         try:
             inventory = self.store.list_assets()
@@ -230,9 +230,9 @@ class CertifiedDeduperApp(SmartDeduperApp):
             slider = int(round(self.slider.get()))
             queue = getattr(self, "_active_certified_queue", None)
             if queue is None:
-                self._family_repair_queue.mark_pending(
-                    repair_id,
-                    "Certified queue unavailable during family repair",
+                self._family_recertification_queue.mark_pending(
+                    recertification_id,
+                    "Certified queue unavailable during family recertification",
                 )
                 return
 
@@ -262,11 +262,11 @@ class CertifiedDeduperApp(SmartDeduperApp):
                     )
                     self._ui(self._refresh_pairs)
 
-            self._family_repair_queue.complete(repair_id)
+            self._family_recertification_queue.complete(recertification_id)
             self._ui(
                 self.status.set,
                 (
-                    f"Family repair complete — {completed} certified families admitted first; "
+                    f"Family recertification complete — {completed} certified families admitted first; "
                     f"inventory delta: {len(evidence_sync.delta.added)} added, "
                     f"{len(evidence_sync.delta.changed)} changed, "
                     f"{len(evidence_sync.delta.removed)} removed."
@@ -274,13 +274,13 @@ class CertifiedDeduperApp(SmartDeduperApp):
             )
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
-            self._family_repair_queue.mark_pending(repair_id, error)
+            self._family_recertification_queue.mark_pending(recertification_id, error)
             pending = {
-                job.repair_id: job for job in self._family_repair_queue.pending()
-            }.get(repair_id)
+                job.recertification_id: job for job in self._family_recertification_queue.pending()
+            }.get(recertification_id)
             message = (
-                family_repair_status_text(pending)
+                family_recertification_status_text(pending)
                 if pending is not None
-                else f"Family repair saved for automatic retry — {error}"
+                else f"Family recertification saved for automatic retry — {error}"
             )
             self._ui(self.status.set, message)

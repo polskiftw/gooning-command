@@ -84,22 +84,22 @@ class SmartDeduperApp(FastDeduperApp):
                 "survivor, and deletion relationships cannot change.",
             )
 
-            repair_queue = getattr(self, "_family_repair_queue", None)
-            pending_repairs = repair_queue.pending() if repair_queue is not None else ()
-            repair_focus_keys = {
+            recertification_queue = getattr(self, "_family_recertification_queue", None)
+            pending_recertifications = recertification_queue.pending() if recertification_queue is not None else ()
+            recertification_focus_keys = {
                 key
-                for repair in pending_repairs
+                for repair in pending_recertifications
                 for key in repair.priority_keys
                 if key in live_keys
             }
             delta = evidence_sync.delta
-            focus_keys = set(delta.added) | set(delta.changed) | repair_focus_keys
+            focus_keys = set(delta.added) | set(delta.changed) | recertification_focus_keys
             incremental = None
             if errors == 0 and focus_keys and old_boundary is not None and old_fingerprint:
-                if repair_focus_keys:
+                if recertification_focus_keys:
                     self._ui(
                         self.status.set,
-                        f"Repairing {len(repair_focus_keys)} protected family survivors first…",
+                        f"Recertifying {len(recertification_focus_keys)} protected family survivors first…",
                     )
                 else:
                     self._ui(
@@ -252,9 +252,9 @@ class SmartDeduperApp(FastDeduperApp):
                     f"atomically promoted {promoted_pair_count} certified review pairs; "
                     "NUKE unlocked for this app session"
                 )
-                if repair_queue is not None:
-                    for repair in pending_repairs:
-                        repair_queue.complete(repair.repair_id)
+                if recertification_queue is not None:
+                    for repair in pending_recertifications:
+                        recertification_queue.complete(repair.recertification_id)
             elif errors:
                 self.evidence.restore_metadata(evidence_checkpoint)
                 safety_summary = (

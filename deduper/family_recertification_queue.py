@@ -18,9 +18,9 @@ class PendingFamilyRecertification:
 class FamilyRecertificationQueue:
     """Crash-safe priority queue for BYE BITCH family recertification.
 
-    The SQLite table and member-key names retain their historical
-    ``family_repair_*`` / ``repair_id`` spelling solely for in-place database
-    compatibility. They are private storage names, not current product terminology.
+    Startup performs an idempotent in-place migration from historical
+    ``family_repair_*`` tables to the current ``family_recertification_*``
+    schema before any queue operation runs.
     """
 
     OPEN_STATUSES = ("pending", "running", "retry")
@@ -28,90 +28,172 @@ class FamilyRecertificationQueue:
     def __init__(self, database) -> None:
         self.database = database
         with self.database._lock, self.database.connection:
-            self.database.connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS family_repair_jobs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    deleted_key TEXT NOT NULL,
-                    protected_key TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'pending',
-                    attempt_count INTEGER NOT NULL DEFAULT 0,
-                    last_error TEXT,
-                    last_attempt_at TEXT,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    completed_at TEXT
-                );
+            self._migrate_legacy_schema()
+            self._create_current_schema()
+            self._recover_interrupted_work()
 
-                CREATE TABLE IF NOT EXISTS family_repair_members (
-                    repair_id INTEGER NOT NULL REFERENCES family_repair_jobs(id) ON DELETE CASCADE,
-                    priority INTEGER NOT NULL,
-                    asset_key TEXT NOT NULL,
-                    PRIMARY KEY (repair_id, asset_key),
-                    UNIQUE (repair_id, priority)
-                );
+    def _table_exists(self, name: str) -> bool:
+        row = self.database.connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (name,),
+        ).fetchone()
+        return row is not None
 
-                CREATE INDEX IF NOT EXISTS family_recertification_status_idx
-                    ON family_repair_jobs(status, id);
-                """
+    def _create_current_schema(self) -> None:
+        self.database.connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS family_recertification_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                deleted_key TEXT NOT NULL,
+                protected_key TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                last_attempt_at TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                completed_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS family_recertification_members (
+                recertification_id INTEGER NOT NULL
+                    REFERENCES family_recertification_jobs(id) ON DELETE CASCADE,
+                priority INTEGER NOT NULL,
+                asset_key TEXT NOT NULL,
+                PRIMARY KEY (recertification_id, asset_key),
+                UNIQUE (recertification_id, priority)
+            );
+            CREATE INDEX IF NOT EXISTS family_recertification_status_idx
+                ON family_recertification_jobs(status, id);
+            """
+        )
+        columns = {
+            str(row["name"])
+            for row in self.database.connection.execute(
+                "PRAGMA table_info(family_recertification_jobs)"
+            ).fetchall()
+        }
+        if "attempt_count" not in columns:
+            self.database.connection.execute(
+                "ALTER TABLE family_recertification_jobs "
+                "ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0"
             )
-            columns = {
-                str(row["name"])
-                for row in self.database.connection.execute(
-                    "PRAGMA table_info(family_repair_jobs)"
-                ).fetchall()
-            }
-            if "attempt_count" not in columns:
-                self.database.connection.execute(
-                    "ALTER TABLE family_repair_jobs ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0"
-                )
-            if "last_error" not in columns:
-                self.database.connection.execute(
-                    "ALTER TABLE family_repair_jobs ADD COLUMN last_error TEXT"
-                )
-            if "last_attempt_at" not in columns:
-                self.database.connection.execute(
-                    "ALTER TABLE family_repair_jobs ADD COLUMN last_attempt_at TEXT"
-                )
+        if "last_error" not in columns:
+            self.database.connection.execute(
+                "ALTER TABLE family_recertification_jobs ADD COLUMN last_error TEXT"
+            )
+        if "last_attempt_at" not in columns:
+            self.database.connection.execute(
+                "ALTER TABLE family_recertification_jobs ADD COLUMN last_attempt_at TEXT"
+            )
 
-            # A process that died while recertifying leaves a running lease behind.
-            # Make that interruption explicit and retryable after restart.
-            self.database.connection.execute(
-                """
-                UPDATE family_repair_jobs
-                SET status = 'retry',
-                    last_error = COALESCE(last_error, 'Application closed during family recertification')
-                WHERE status = 'running'
-                """
+    def _migrate_legacy_schema(self) -> None:
+        legacy_jobs = self._table_exists("family_repair_jobs")
+        legacy_members = self._table_exists("family_repair_members")
+        if not legacy_jobs and not legacy_members:
+            return
+        if legacy_jobs != legacy_members:
+            raise RuntimeError("incomplete legacy family recertification schema")
+
+        self._create_current_schema()
+        legacy_columns = {
+            str(row["name"])
+            for row in self.database.connection.execute(
+                "PRAGMA table_info(family_repair_jobs)"
+            ).fetchall()
+        }
+        attempt_expr = "attempt_count" if "attempt_count" in legacy_columns else "0"
+        error_expr = "last_error" if "last_error" in legacy_columns else "NULL"
+        attempted_expr = "last_attempt_at" if "last_attempt_at" in legacy_columns else "NULL"
+        self.database.connection.execute(
+            f"""
+            INSERT OR IGNORE INTO family_recertification_jobs (
+                id, deleted_key, protected_key, status, attempt_count, last_error,
+                last_attempt_at, created_at, completed_at
             )
-            # Collapse duplicates created by older builds before enforcing one open
-            # job per deleted object.
-            self.database.connection.execute(
-                """
-                UPDATE family_repair_jobs
-                SET status = 'complete', completed_at = CURRENT_TIMESTAMP
-                WHERE status IN ('pending', 'running', 'retry')
-                  AND id NOT IN (
-                      SELECT MIN(id)
-                      FROM family_repair_jobs
-                      WHERE status IN ('pending', 'running', 'retry')
-                      GROUP BY deleted_key
-                  )
-                """
+            SELECT id, deleted_key, protected_key, status, {attempt_expr}, {error_expr},
+                   {attempted_expr}, created_at, completed_at
+            FROM family_repair_jobs
+            """
+        )
+        self.database.connection.execute(
+            """
+            INSERT OR IGNORE INTO family_recertification_members (
+                recertification_id, priority, asset_key
             )
-            self.database.connection.execute(
-                """
-                CREATE UNIQUE INDEX IF NOT EXISTS family_repair_one_open_deleted_idx
-                ON family_repair_jobs(deleted_key)
-                WHERE status IN ('pending', 'running', 'retry')
-                """
-            )
+            SELECT repair_id, priority, asset_key
+            FROM family_repair_members
+            """
+        )
+
+        old_jobs = int(self.database.connection.execute(
+            "SELECT COUNT(*) AS count FROM family_repair_jobs"
+        ).fetchone()["count"])
+        new_jobs = int(self.database.connection.execute(
+            "SELECT COUNT(*) AS count FROM family_recertification_jobs"
+        ).fetchone()["count"])
+        old_members = int(self.database.connection.execute(
+            "SELECT COUNT(*) AS count FROM family_repair_members"
+        ).fetchone()["count"])
+        new_members = int(self.database.connection.execute(
+            "SELECT COUNT(*) AS count FROM family_recertification_members"
+        ).fetchone()["count"])
+        if new_jobs < old_jobs or new_members < old_members:
+            raise RuntimeError("family recertification schema migration verification failed")
+
+        orphan = self.database.connection.execute(
+            """
+            SELECT 1
+            FROM family_recertification_members m
+            LEFT JOIN family_recertification_jobs j ON j.id = m.recertification_id
+            WHERE j.id IS NULL
+            LIMIT 1
+            """
+        ).fetchone()
+        if orphan is not None:
+            raise RuntimeError("family recertification migration produced orphan members")
+
+        self.database.connection.execute("DROP TABLE family_repair_members")
+        self.database.connection.execute("DROP TABLE family_repair_jobs")
+
+    def _recover_interrupted_work(self) -> None:
+        self.database.connection.execute(
+            """
+            UPDATE family_recertification_jobs
+            SET status = 'retry',
+                last_error = COALESCE(
+                    last_error,
+                    'Application closed during family recertification'
+                )
+            WHERE status = 'running'
+            """
+        )
+        self.database.connection.execute(
+            """
+            UPDATE family_recertification_jobs
+            SET status = 'complete', completed_at = CURRENT_TIMESTAMP
+            WHERE status IN ('pending', 'running', 'retry')
+              AND id NOT IN (
+                  SELECT MIN(id)
+                  FROM family_recertification_jobs
+                  WHERE status IN ('pending', 'running', 'retry')
+                  GROUP BY deleted_key
+              )
+            """
+        )
+        self.database.connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS
+                family_recertification_one_open_deleted_idx
+            ON family_recertification_jobs(deleted_key)
+            WHERE status IN ('pending', 'running', 'retry')
+            """
+        )
 
     def _priority_keys(self, recertification_id: int) -> tuple[str, ...]:
         rows = self.database.connection.execute(
             """
             SELECT asset_key
-            FROM family_repair_members
-            WHERE repair_id = ?
+            FROM family_recertification_members
+            WHERE recertification_id = ?
             ORDER BY priority
             """,
             (recertification_id,),
@@ -136,7 +218,7 @@ class FamilyRecertificationQueue:
             existing = self.database.connection.execute(
                 """
                 SELECT id, protected_key
-                FROM family_repair_jobs
+                FROM family_recertification_jobs
                 WHERE deleted_key = ? AND status IN ('pending', 'running', 'retry')
                 """,
                 (deleted_key,),
@@ -151,7 +233,7 @@ class FamilyRecertificationQueue:
 
             cursor = self.database.connection.execute(
                 """
-                INSERT INTO family_repair_jobs (deleted_key, protected_key, status)
+                INSERT INTO family_recertification_jobs (deleted_key, protected_key, status)
                 VALUES (?, ?, 'pending')
                 """,
                 (deleted_key, protected_key),
@@ -159,7 +241,7 @@ class FamilyRecertificationQueue:
             recertification_id = int(cursor.lastrowid)
             self.database.connection.executemany(
                 """
-                INSERT INTO family_repair_members (repair_id, priority, asset_key)
+                INSERT INTO family_recertification_members (recertification_id, priority, asset_key)
                 VALUES (?, ?, ?)
                 """,
                 (
@@ -174,7 +256,7 @@ class FamilyRecertificationQueue:
             jobs = self.database.connection.execute(
                 """
                 SELECT id, deleted_key, protected_key, status, attempt_count, last_error
-                FROM family_repair_jobs
+                FROM family_recertification_jobs
                 WHERE status IN ('pending', 'running', 'retry')
                 ORDER BY id
                 """
@@ -199,7 +281,7 @@ class FamilyRecertificationQueue:
         with self.database._lock, self.database.connection:
             cursor = self.database.connection.execute(
                 """
-                UPDATE family_repair_jobs
+                UPDATE family_recertification_jobs
                 SET status = 'running',
                     attempt_count = attempt_count + 1,
                     last_error = NULL,
@@ -216,7 +298,7 @@ class FamilyRecertificationQueue:
         with self.database._lock, self.database.connection:
             self.database.connection.execute(
                 """
-                UPDATE family_repair_jobs
+                UPDATE family_recertification_jobs
                 SET status = 'retry', last_error = ?
                 WHERE id = ? AND status = 'running'
                 """,
@@ -227,7 +309,7 @@ class FamilyRecertificationQueue:
         with self.database._lock, self.database.connection:
             self.database.connection.execute(
                 """
-                UPDATE family_repair_jobs
+                UPDATE family_recertification_jobs
                 SET status = 'complete', completed_at = CURRENT_TIMESTAMP, last_error = NULL
                 WHERE id = ?
                 """,
@@ -238,7 +320,7 @@ class FamilyRecertificationQueue:
         with self.database._lock:
             row = self.database.connection.execute(
                 """
-                SELECT 1 FROM family_repair_jobs
+                SELECT 1 FROM family_recertification_jobs
                 WHERE status IN ('pending', 'running', 'retry')
                 LIMIT 1
                 """,

@@ -10,10 +10,15 @@ class PendingFamilyRepair:
     deleted_key: str
     protected_key: str
     priority_keys: tuple[str, ...]
+    status: str
+    attempt_count: int
+    last_error: str | None
 
 
 class FamilyRepairQueue:
     """Crash-safe priority queue for BYE BITCH family recertification."""
+
+    OPEN_STATUSES = ("pending", "running", "retry")
 
     def __init__(self, database) -> None:
         self.database = database
@@ -25,6 +30,9 @@ class FamilyRepairQueue:
                     deleted_key TEXT NOT NULL,
                     protected_key TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'pending',
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT,
+                    last_attempt_at TEXT,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     completed_at TEXT
                 );
@@ -41,26 +49,46 @@ class FamilyRepairQueue:
                     ON family_repair_jobs(status, id);
                 """
             )
+            columns = {
+                str(row["name"])
+                for row in self.database.connection.execute(
+                    "PRAGMA table_info(family_repair_jobs)"
+                ).fetchall()
+            }
+            if "attempt_count" not in columns:
+                self.database.connection.execute(
+                    "ALTER TABLE family_repair_jobs ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0"
+                )
+            if "last_error" not in columns:
+                self.database.connection.execute(
+                    "ALTER TABLE family_repair_jobs ADD COLUMN last_error TEXT"
+                )
+            if "last_attempt_at" not in columns:
+                self.database.connection.execute(
+                    "ALTER TABLE family_repair_jobs ADD COLUMN last_attempt_at TEXT"
+                )
+
             # A process that died while repairing leaves a running lease behind.
-            # On startup it becomes pending again and may be claimed exactly once.
+            # Make that interruption explicit and retryable after restart.
             self.database.connection.execute(
                 """
                 UPDATE family_repair_jobs
-                SET status = 'pending'
+                SET status = 'retry',
+                    last_error = COALESCE(last_error, 'Application closed during family repair')
                 WHERE status = 'running'
                 """
             )
-            # Collapse any duplicates created by older builds before enforcing the
-            # one-unfinished-job rule at the database layer.
+            # Collapse duplicates created by older builds before enforcing one open
+            # job per deleted object.
             self.database.connection.execute(
                 """
                 UPDATE family_repair_jobs
                 SET status = 'complete', completed_at = CURRENT_TIMESTAMP
-                WHERE status IN ('pending', 'running')
+                WHERE status IN ('pending', 'running', 'retry')
                   AND id NOT IN (
                       SELECT MIN(id)
                       FROM family_repair_jobs
-                      WHERE status IN ('pending', 'running')
+                      WHERE status IN ('pending', 'running', 'retry')
                       GROUP BY deleted_key
                   )
                 """
@@ -69,7 +97,7 @@ class FamilyRepairQueue:
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS family_repair_one_open_deleted_idx
                 ON family_repair_jobs(deleted_key)
-                WHERE status IN ('pending', 'running')
+                WHERE status IN ('pending', 'running', 'retry')
                 """
             )
 
@@ -104,7 +132,7 @@ class FamilyRepairQueue:
                 """
                 SELECT id, protected_key
                 FROM family_repair_jobs
-                WHERE deleted_key = ? AND status IN ('pending', 'running')
+                WHERE deleted_key = ? AND status IN ('pending', 'running', 'retry')
                 """,
                 (deleted_key,),
             ).fetchone()
@@ -140,9 +168,9 @@ class FamilyRepairQueue:
         with self.database._lock:
             jobs = self.database.connection.execute(
                 """
-                SELECT id, deleted_key, protected_key
+                SELECT id, deleted_key, protected_key, status, attempt_count, last_error
                 FROM family_repair_jobs
-                WHERE status IN ('pending', 'running')
+                WHERE status IN ('pending', 'running', 'retry')
                 ORDER BY id
                 """
             ).fetchall()
@@ -154,32 +182,40 @@ class FamilyRepairQueue:
                         deleted_key=str(job["deleted_key"]),
                         protected_key=str(job["protected_key"]),
                         priority_keys=self._priority_keys(int(job["id"])),
+                        status=str(job["status"]),
+                        attempt_count=int(job["attempt_count"]),
+                        last_error=(str(job["last_error"]) if job["last_error"] else None),
                     )
                 )
         return tuple(results)
 
     def mark_running(self, repair_id: int) -> bool:
-        """Atomically claim a pending repair; only one caller can succeed."""
+        """Atomically claim pending/retry work; only one caller can succeed."""
         with self.database._lock, self.database.connection:
             cursor = self.database.connection.execute(
                 """
                 UPDATE family_repair_jobs
-                SET status = 'running'
-                WHERE id = ? AND status = 'pending'
+                SET status = 'running',
+                    attempt_count = attempt_count + 1,
+                    last_error = NULL,
+                    last_attempt_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status IN ('pending', 'retry')
                 """,
                 (repair_id,),
             )
         return cursor.rowcount == 1
 
-    def mark_pending(self, repair_id: int) -> None:
+    def mark_pending(self, repair_id: int, error: str | None = None) -> None:
+        """Release a claim for retry while preserving the visible failure reason."""
+        message = error[:1000] if error else "Family repair did not finish"
         with self.database._lock, self.database.connection:
             self.database.connection.execute(
                 """
                 UPDATE family_repair_jobs
-                SET status = 'pending'
+                SET status = 'retry', last_error = ?
                 WHERE id = ? AND status = 'running'
                 """,
-                (repair_id,),
+                (message, repair_id),
             )
 
     def complete(self, repair_id: int) -> None:
@@ -187,7 +223,7 @@ class FamilyRepairQueue:
             self.database.connection.execute(
                 """
                 UPDATE family_repair_jobs
-                SET status = 'complete', completed_at = CURRENT_TIMESTAMP
+                SET status = 'complete', completed_at = CURRENT_TIMESTAMP, last_error = NULL
                 WHERE id = ?
                 """,
                 (repair_id,),
@@ -198,7 +234,7 @@ class FamilyRepairQueue:
             row = self.database.connection.execute(
                 """
                 SELECT 1 FROM family_repair_jobs
-                WHERE status IN ('pending', 'running')
+                WHERE status IN ('pending', 'running', 'retry')
                 LIMIT 1
                 """
             ).fetchone()

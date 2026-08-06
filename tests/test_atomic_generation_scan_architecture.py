@@ -11,6 +11,7 @@ class AtomicGenerationScanArchitectureTests(unittest.TestCase):
         self.assertIn("builder.build()", smart)
         self.assertIn("previous certified queue retained", smart)
         self.assertIn("self._refresh_index_boundary(apply=False)", smart)
+        self.assertIn("atomic promotion", smart)
 
 
 if __name__ == "__main__":

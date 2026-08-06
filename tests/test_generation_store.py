@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
-
-import pytest
+import unittest
 
 from deduper.generation_store import GenerationIdentity, GenerationStore
 
@@ -49,129 +48,132 @@ def identity(fingerprint: str = "fp-1") -> GenerationIdentity:
     )
 
 
-def test_migration_is_additive_and_preserves_existing_data() -> None:
-    connection = make_connection()
-    connection.execute(
-        "INSERT INTO deletion_log (deleted_key) VALUES ('old-deletion')"
-    )
-    connection.execute(
-        "INSERT INTO index_cleanup_queue (key) VALUES ('needs-cleanup')"
-    )
+class GenerationStoreTests(unittest.TestCase):
+    def test_migration_is_additive_and_preserves_existing_data(self) -> None:
+        connection = make_connection()
+        connection.execute(
+            "INSERT INTO deletion_log (deleted_key) VALUES ('old-deletion')"
+        )
+        connection.execute(
+            "INSERT INTO index_cleanup_queue (key) VALUES ('needs-cleanup')"
+        )
 
-    GenerationStore(connection)
+        GenerationStore(connection)
 
-    assert connection.execute("SELECT COUNT(*) FROM assets").fetchone()[0] == 4
-    assert connection.execute("SELECT COUNT(*) FROM deletion_log").fetchone()[0] == 1
-    assert connection.execute(
-        "SELECT COUNT(*) FROM index_cleanup_queue"
-    ).fetchone()[0] == 1
+        self.assertEqual(connection.execute("SELECT COUNT(*) FROM assets").fetchone()[0], 4)
+        self.assertEqual(connection.execute("SELECT COUNT(*) FROM deletion_log").fetchone()[0], 1)
+        self.assertEqual(
+            connection.execute("SELECT COUNT(*) FROM index_cleanup_queue").fetchone()[0],
+            1,
+        )
 
+    def test_legacy_queue_is_view_only_not_certified(self) -> None:
+        connection = make_connection()
+        connection.execute(
+            "INSERT INTO pairs (left_key, right_key) VALUES ('A', 'B')"
+        )
+        store = GenerationStore(connection)
 
-def test_legacy_queue_is_view_only_not_certified() -> None:
-    connection = make_connection()
-    connection.execute(
-        "INSERT INTO pairs (left_key, right_key) VALUES ('A', 'B')"
-    )
-    store = GenerationStore(connection)
+        generation_id = store.register_legacy_view_only()
 
-    generation_id = store.register_legacy_view_only()
+        row = connection.execute(
+            "SELECT state FROM certified_generations WHERE generation_id = ?",
+            (generation_id,),
+        ).fetchone()
+        self.assertEqual(row["state"], "legacy_view_only")
+        self.assertIsNone(store.active())
 
-    row = connection.execute(
-        "SELECT state FROM certified_generations WHERE generation_id = ?",
-        (generation_id,),
-    ).fetchone()
-    assert row["state"] == "legacy_view_only"
-    assert store.active() is None
+    def test_staging_does_not_replace_active_until_atomic_promotion(self) -> None:
+        connection = make_connection()
+        store = GenerationStore(connection)
 
+        first = store.create_staging(identity("fp-1"))
+        store.replace_staging_pairs(
+            first,
+            [(0, "group-a", "A", "B", 99.0, "test")],
+        )
+        store.complete_staging(first)
+        store.promote(first)
 
-def test_staging_does_not_replace_active_until_atomic_promotion() -> None:
-    connection = make_connection()
-    store = GenerationStore(connection)
+        second = store.create_staging(identity("fp-2"))
+        store.replace_staging_pairs(
+            second,
+            [(0, "group-b", "C", "D", 98.0, "test")],
+        )
 
-    first = store.create_staging(identity("fp-1"))
-    store.replace_staging_pairs(
-        first,
-        [(0, "group-a", "A", "B", 99.0, "test")],
-    )
-    store.complete_staging(first)
-    store.promote(first)
+        self.assertEqual(store.active().generation_id, first)
+        self.assertEqual([row["deletion_key"] for row in store.pairs(first)], ["B"])
 
-    second = store.create_staging(identity("fp-2"))
-    store.replace_staging_pairs(
-        second,
-        [(0, "group-b", "C", "D", 98.0, "test")],
-    )
+        store.complete_staging(second)
+        store.promote(second)
 
-    assert store.active().generation_id == first
-    assert [row["deletion_key"] for row in store.pairs(first)] == ["B"]
+        self.assertEqual(store.active().generation_id, second)
+        first_state = connection.execute(
+            "SELECT state FROM certified_generations WHERE generation_id = ?",
+            (first,),
+        ).fetchone()["state"]
+        self.assertEqual(first_state, "retired")
+        self.assertEqual([row["deletion_key"] for row in store.pairs(first)], ["B"])
 
-    store.complete_staging(second)
-    store.promote(second)
+    def test_incomplete_staging_cannot_be_promoted(self) -> None:
+        connection = make_connection()
+        store = GenerationStore(connection)
+        staging = store.create_staging(identity())
 
-    assert store.active().generation_id == second
-    first_state = connection.execute(
-        "SELECT state FROM certified_generations WHERE generation_id = ?",
-        (first,),
-    ).fetchone()["state"]
-    assert first_state == "retired"
-    assert [row["deletion_key"] for row in store.pairs(first)] == ["B"]
+        with self.assertRaisesRegex(ValueError, "incomplete"):
+            store.promote(staging)
 
+        self.assertIsNone(store.active())
 
-def test_incomplete_staging_cannot_be_promoted() -> None:
-    connection = make_connection()
-    store = GenerationStore(connection)
-    staging = store.create_staging(identity())
+    def test_deletion_candidate_can_appear_only_once(self) -> None:
+        connection = make_connection()
+        store = GenerationStore(connection)
+        staging = store.create_staging(identity())
 
-    with pytest.raises(ValueError, match="incomplete"):
-        store.promote(staging)
+        with self.assertRaisesRegex(ValueError, "only once"):
+            store.replace_staging_pairs(
+                staging,
+                [
+                    (0, "group-a", "A", "B", 99.0, "test"),
+                    (1, "group-a", "C", "B", 98.0, "test"),
+                ],
+            )
 
-    assert store.active() is None
-
-
-def test_deletion_candidate_can_appear_only_once() -> None:
-    connection = make_connection()
-    store = GenerationStore(connection)
-    staging = store.create_staging(identity())
-
-    with pytest.raises(ValueError, match="only once"):
+    def test_survivor_can_appear_in_multiple_pairs_and_sha_is_generation_scoped(self) -> None:
+        connection = make_connection()
+        store = GenerationStore(connection)
+        staging = store.create_staging(identity())
         store.replace_staging_pairs(
             staging,
             [
                 (0, "group-a", "A", "B", 99.0, "test"),
-                (1, "group-a", "C", "B", 98.0, "test"),
+                (1, "group-a", "A", "C", 98.0, "test"),
             ],
         )
+        store.replace_staging_sha_deletions(staging, [(0, "A", "D")])
+        store.complete_staging(staging)
+        store.promote(staging)
+
+        self.assertEqual(
+            [row["survivor_key"] for row in store.pairs(staging)],
+            ["A", "A"],
+        )
+        self.assertEqual(
+            [row["deletion_key"] for row in store.sha_deletions(staging)],
+            ["D"],
+        )
+
+    def test_queue_position_belongs_to_certified_generation(self) -> None:
+        connection = make_connection()
+        store = GenerationStore(connection)
+        staging = store.create_staging(identity())
+        store.complete_staging(staging)
+        store.promote(staging)
+
+        store.set_queue_position(staging, 3)
+
+        self.assertEqual(store.active().saved_queue_position, 3)
 
 
-def test_survivor_can_appear_in_multiple_pairs_and_sha_is_generation_scoped() -> None:
-    connection = make_connection()
-    store = GenerationStore(connection)
-    staging = store.create_staging(identity())
-    store.replace_staging_pairs(
-        staging,
-        [
-            (0, "group-a", "A", "B", 99.0, "test"),
-            (1, "group-a", "A", "C", 98.0, "test"),
-        ],
-    )
-    store.replace_staging_sha_deletions(
-        staging,
-        [(0, "A", "D")],
-    )
-    store.complete_staging(staging)
-    store.promote(staging)
-
-    assert [row["survivor_key"] for row in store.pairs(staging)] == ["A", "A"]
-    assert [row["deletion_key"] for row in store.sha_deletions(staging)] == ["D"]
-
-
-def test_queue_position_belongs_to_certified_generation() -> None:
-    connection = make_connection()
-    store = GenerationStore(connection)
-    staging = store.create_staging(identity())
-    store.complete_staging(staging)
-    store.promote(staging)
-
-    store.set_queue_position(staging, 3)
-
-    assert store.active().saved_queue_position == 3
+if __name__ == "__main__":
+    unittest.main()

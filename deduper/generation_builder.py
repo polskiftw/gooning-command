@@ -4,7 +4,7 @@ import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
-from .generation_identity import build_generation_identity
+from .generation_identity import MATCHER_VERSION, build_generation_identity
 from .generation_store import GenerationRecord, GenerationStore
 from .models import Asset
 
@@ -61,11 +61,14 @@ class CertifiedGenerationBuilder:
         inventory: Iterable[Asset],
         slider_value: int,
         payload_builder: PayloadBuilder,
+        *,
+        matcher_version: str = MATCHER_VERSION,
     ) -> None:
         self.generations = generations
         self.inventory = tuple(inventory)
         self.slider_value = int(slider_value)
         self.payload_builder = payload_builder
+        self.matcher_version = matcher_version
         self._cancelled = threading.Event()
 
     def cancel(self) -> None:
@@ -75,7 +78,11 @@ class CertifiedGenerationBuilder:
         if self._cancelled.is_set():
             raise GenerationBuildCancelled("generation build cancelled before staging")
 
-        identity = build_generation_identity(self.inventory, self.slider_value)
+        identity = build_generation_identity(
+            self.inventory,
+            self.slider_value,
+            matcher_version=self.matcher_version,
+        )
         staging_id = self.generations.create_staging(identity)
         try:
             payload = self.payload_builder(

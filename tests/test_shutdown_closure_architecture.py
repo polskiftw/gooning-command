@@ -14,6 +14,7 @@ class ShutdownClosureArchitectureTests(unittest.TestCase):
         self.assertLess(close.index("scan_cancel.set()"), close.index("self.executor.shutdown"))
         self.assertLess(close.index("self.executor.shutdown"), close.index("evidence.close()"))
         self.assertLess(close.index("evidence.close()"), close.index("self.database.close()"))
+        self.assertLess(close.index("self.database.close()"), close.index("self.destroy()"))
 
     def test_event_pump_and_new_work_fail_closed_during_shutdown(self) -> None:
         app = Path("deduper/app.py").read_text()

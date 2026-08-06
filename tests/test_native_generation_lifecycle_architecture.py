@@ -11,6 +11,7 @@ class NativeGenerationLifecycleArchitectureTests(unittest.TestCase):
         self.assertIn("generation_startup: GenerationStartupState", certified)
         self.assertIn("self._generation_lifecycle = GenerationAppLifecycle", certified)
         self.assertIn("generation_startup=generation_startup", main)
+        self.assertIn(".install()", certified)
 
 
 if __name__ == "__main__":

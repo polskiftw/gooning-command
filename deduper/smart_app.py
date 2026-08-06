@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from .cache_view import cached_pairs_for_slider, ready_pairs_for_slider
+from .certified_group_admission import admit_closed_frontier_group, preview_projection
+from .certified_queue import CertifiedQueue
 from .evidence_inventory import reconcile_asset_inventory
 from .fast_app import FastDeduperApp
 from .focused_recertification import recertify_added_or_changed_assets
@@ -21,9 +22,8 @@ class SmartDeduperApp(FastDeduperApp):
         self._scan_completed_current_inventory = False
 
         # Review rows from an interrupted/older scan must never be presented as
-        # CERTIFIED for this new session. They are disposable projections of the
-        # durable evidence cache and will be rebuilt only from current-inventory
-        # group-closure proof or a completely indexed threshold band.
+        # CERTIFIED for this new session. They are disposable UI projections and
+        # are repopulated only from whole, closed, immutable certified families.
         self.database.replace_pairs([], preserve_exclusions=True)
         self._refresh_pairs()
         self._set_action_state()
@@ -61,13 +61,16 @@ class SmartDeduperApp(FastDeduperApp):
             assets = self.database.all_hashed_assets()
             visual_assets, sha_deletions = partition_exact_duplicates(assets)
             sha_target_count = self.database.replace_sha_deletions(sha_deletions)
+            certified_queue = CertifiedQueue()
+            self._active_certified_queue = certified_queue
             self.database.set_matching_state("running")
             self._ui(
                 self._set_empty_pair_message,
                 "Indexing from Strict toward Loose…\n\n"
-                "A review group appears as soon as every member has been exhaustively checked "
-                "against the complete current inventory at that threshold. CERTIFIED therefore "
-                "means no undiscovered relationship can still change that group, survivor, or row.",
+                "A review group appears only after the entire connected family has been "
+                "exhaustively checked against the complete current inventory at that threshold. "
+                "New certified families may re-sort the queue, but an admitted family's members, "
+                "survivor, and deletion relationships cannot change.",
             )
 
             delta = evidence_sync.delta
@@ -89,9 +92,6 @@ class SmartDeduperApp(FastDeduperApp):
                         cancelled=self.scan_cancel.is_set,
                     )
                 except Exception:
-                    # The reconciler already reset the completion boundary. A
-                    # focused failure therefore falls back to the established
-                    # complete progressive scan rather than weakening safety.
                     incremental = None
                     self.evidence.set_state("loosest_complete_slider", "100")
                     self.evidence.set_state("build_status", "dirty")
@@ -99,27 +99,8 @@ class SmartDeduperApp(FastDeduperApp):
             completed_bands = 0
             completed_groups = 0
 
-            def publish_certified_groups(slider: int) -> int:
-                # ready_pairs_for_slider exposes only components whose complete
-                # current-inventory frontier has been exhausted for every member.
-                # No artificial lock is involved: their immutability follows from
-                # the completed comparison proof itself.
-                pairs = ready_pairs_for_slider(self.evidence, visual_assets, slider)
-                target_count = self.database.replace_pairs(
-                    pairs,
-                    preserve_exclusions=True,
-                )
-                self._streaming_ready_slider = slider
-                self._streaming_ready_pairs = target_count
-                self._ui(self._refresh_pairs)
-                self._ui(lambda: self._refresh_index_boundary(apply=False))
-                return target_count
-
-            def publish_certified_band(slider: int) -> int:
-                # cached_pairs_for_slider refuses incomplete bands. Once the full
-                # band finishes, replace the partial READY projection with the
-                # authoritative complete graph for this inventory and threshold.
-                pairs = cached_pairs_for_slider(self.evidence, visual_assets, slider)
+            def publish_queue(slider: int) -> int:
+                pairs = preview_projection(certified_queue)
                 target_count = self.database.replace_pairs(
                     pairs,
                     preserve_exclusions=True,
@@ -132,37 +113,49 @@ class SmartDeduperApp(FastDeduperApp):
 
             def group_progress(band, result, seed_count: int) -> None:
                 nonlocal completed_groups
+                admission = admit_closed_frontier_group(
+                    certified_queue,
+                    self.evidence,
+                    visual_assets,
+                    result,
+                )
                 if result.group is None:
                     self._ui(
                         self.status.set,
                         (
                             f"Band {band.strictest_slider}–{band.loosest_slider}: "
                             f"seed {result.seed_key} frontier processed after {seed_count} seeds; "
-                            f"{len(result.members)} discovered members. This group is not certified yet."
+                            f"{len(result.members)} discovered members. Whole family unfinished — "
+                            "nothing was added to preview."
                         ),
                     )
                     return
-                completed_groups += 1
-                target_count = publish_certified_groups(band.loosest_slider)
+                if admission.admitted:
+                    completed_groups += 1
+                target_count = publish_queue(band.loosest_slider)
                 self._ui(
                     self.status.set,
                     (
-                        f"CERTIFIED group {completed_groups}: {len(result.group.members)} members "
-                        f"at slider {band.loosest_slider}; {target_count} final review pairs are now "
-                        "available while unrelated indexing continues."
+                        f"CERTIFIED whole family {completed_groups}: "
+                        f"{len(result.group.members)} members at slider {band.loosest_slider}; "
+                        f"{target_count} final review pairs available. Queue positions may re-sort "
+                        "by percentage; certified family relationships are frozen."
                     ),
                 )
 
             def band_progress(result) -> None:
                 nonlocal completed_bands
                 completed_bands += 1
-                target_count = publish_certified_band(result.band.loosest_slider)
+                self._streaming_ready_slider = result.band.loosest_slider
+                self._streaming_ready_pairs = len(certified_queue.pairs())
                 self._ui(self._progressive_band_completed, result)
+                self._ui(lambda: self._refresh_index_boundary(apply=False))
                 self._ui(
                     self.status.set,
                     (
                         f"CERTIFIED band {result.band.strictest_slider}–"
-                        f"{result.band.loosest_slider} complete: {target_count} final review pairs. "
+                        f"{result.band.loosest_slider} complete: "
+                        f"{len(certified_queue.pairs())} preview pairs from immutable whole families. "
                         "The slider can now use this completed band."
                     ),
                 )
@@ -194,8 +187,8 @@ class SmartDeduperApp(FastDeduperApp):
                 boundary_text = "none" if boundary is None else str(boundary)
                 return (
                     f"Indexing stopped safely after {completed_bands} completed bands and "
-                    f"{completed_groups} certified groups; unlocked through slider {boundary_text}. "
-                    "Only naturally closed review groups were published; NUKE remains locked."
+                    f"{completed_groups} certified whole families; unlocked through slider "
+                    f"{boundary_text}. Unfinished families never entered preview; NUKE remains locked."
                 )
 
             observed_edges = self.evidence.edge_count()
@@ -227,7 +220,7 @@ class SmartDeduperApp(FastDeduperApp):
                 f"Scan complete. {new_count} new, {changed_count} changed, "
                 f"{missing_count} missing, {errors} errors, "
                 f"{sha_target_count} invisible SHA extras, {observed_edges} permanent evidence edges, "
-                f"{completed_groups} certified groups, {completed_bands} newly certified bands, "
+                f"{completed_groups} certified whole families, {completed_bands} newly certified bands, "
                 f"index unlocked through slider {boundary_text}; {cache_summary}; {safety_summary}."
             )
 

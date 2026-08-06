@@ -1,0 +1,58 @@
+name: Build Native Hamming Benchmark
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "deduper/native_benchmark/**"
+      - ".github/workflows/build-native-hamming-benchmark.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyInstaller
+        run: python -m pip install --upgrade pyinstaller
+
+      - name: Build native benchmark
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cl /nologo /O2 /EHsc /std:c++20 /arch:AVX2 deduper\native_benchmark\hamming_benchmark.cpp /Fe:deduper\native_benchmark\hamming_benchmark.exe
+
+      - name: Build read-only database exporter
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --onefile `
+            --name export_hashes `
+            deduper/native_benchmark/export_hashes.py
+          Copy-Item dist/export_hashes.exe deduper/native_benchmark/export_hashes.exe
+
+      - name: Assemble downloadable package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifact | Out-Null
+          Copy-Item deduper/native_benchmark/hamming_benchmark.exe artifact/
+          Copy-Item deduper/native_benchmark/export_hashes.exe artifact/
+          Copy-Item deduper/native_benchmark/RUN-BENCHMARK.bat artifact/
+          Copy-Item deduper/native_benchmark/README-DOWNLOAD.txt artifact/
+
+      - name: Upload Windows benchmark
+        uses: actions/upload-artifact@v4
+        with:
+          name: GParty-Native-Hamming-Benchmark-Windows
+          path: artifact/*
+          if-no-files-found: error
+          retention-days: 14

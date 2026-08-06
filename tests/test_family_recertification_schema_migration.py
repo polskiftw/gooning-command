@@ -62,6 +62,7 @@ class FamilyRecertificationSchemaMigrationTests(unittest.TestCase):
             db.close()
 
     def test_partial_modern_table_missing_status_is_repaired_before_indexing(self) -> None:
+        # This reproduces the exact prerelease database shape reported on Windows.
         with tempfile.TemporaryDirectory() as directory:
             db = CertifiedDatabase(Path(directory) / "deduper.sqlite3")
             with db.connection:

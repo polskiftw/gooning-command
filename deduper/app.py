@@ -63,6 +63,7 @@ class DeduperApp(tk.Tk):
         self.busy = False
         self.review_locked = False
         self.reverse_delete_busy = False
+        self._closing = False
         self.left_asset_key: str | None = None
         self.right_asset_key: str | None = None
         self.preview_requests: dict[MediaPreview, int] = {}
@@ -285,16 +286,22 @@ class DeduperApp(tk.Tk):
         status.pack(fill="x")
 
     def _drain_events(self) -> None:
+        if self._closing:
+            return
         try:
             while True:
                 callback, args = self.events.get_nowait()
+                if self._closing:
+                    return
                 callback(*args)
         except queue.Empty:
             pass
-        self.after(60, self._drain_events)
+        if not self._closing:
+            self.after(60, self._drain_events)
 
     def _ui(self, callback: Callable, *args) -> None:
-        self.events.put((callback, args))
+        if not self._closing:
+            self.events.put((callback, args))
 
     def _set_busy(self, busy: bool, *, lock_review: bool = True) -> None:
         self.busy = busy
@@ -315,7 +322,7 @@ class DeduperApp(tk.Tk):
         *,
         lock_review: bool = True,
     ) -> None:
-        if self.busy:
+        if self._closing or self.busy:
             return
         self._set_busy(True, lock_review=lock_review)
         self.status.set(label)
@@ -631,11 +638,36 @@ class DeduperApp(tk.Tk):
         return "break"
 
     def _close(self) -> None:
-        self.left_preview.stop()
-        self.right_preview.stop()
+        if self._closing:
+            return
+        self._closing = True
+
+        # Stop every source of new work before waiting for existing work. Scan
+        # cancellation is owned by FastDeduperApp, so keep the base app generic.
+        scan_cancel = getattr(self, "scan_cancel", None)
+        if scan_cancel is not None:
+            scan_cancel.set()
         for cancellation in self.preview_cancellations.values():
             cancellation.set()
-        self.preview_executor.shutdown(wait=False, cancel_futures=True)
-        self.executor.shutdown(wait=False, cancel_futures=True)
-        self.database.close()
-        self.destroy()
+        slider_after_id = getattr(self, "_slider_after_id", None)
+        if slider_after_id is not None:
+            try:
+                self.after_cancel(slider_after_id)
+            except tk.TclError:
+                pass
+            self._slider_after_id = None
+
+        self.left_preview.stop()
+        self.right_preview.stop()
+
+        try:
+            # Waiting is mandatory: database handles must remain open until no
+            # scan, deletion, slider-load, or preview callback can use them.
+            self.preview_executor.shutdown(wait=True, cancel_futures=True)
+            self.executor.shutdown(wait=True, cancel_futures=True)
+        finally:
+            evidence = getattr(self, "evidence", None)
+            if evidence is not None:
+                evidence.close()
+            self.database.close()
+            self.destroy()

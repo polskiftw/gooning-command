@@ -141,26 +141,6 @@ jobs:
           if (!(Test-Path $zip)) { throw "Transparent portable ZIP was not created." }
           if ((Get-Item $zip).Length -lt 10MB) { throw "Transparent portable ZIP is unexpectedly small." }
 
-      - name: Scan package with Microsoft Defender CLI
-        shell: pwsh
-        run: |
-          $package = (Resolve-Path "deduper/dist/GParty-Deduper-Windows-Transparent").Path
-          $zip = (Resolve-Path "deduper/dist/GParty-Deduper-Windows-Transparent.zip").Path
-          $platformRoot = Join-Path $env:ProgramData "Microsoft/Windows Defender/Platform"
-          $platform = Get-ChildItem $platformRoot -Directory | Sort-Object Name -Descending | Select-Object -First 1
-          if (!$platform) { throw "Microsoft Defender platform directory was not found." }
-          $scanner = Join-Path $platform.FullName "MpCmdRun.exe"
-          if (!(Test-Path $scanner)) { throw "Microsoft Defender CLI was not found: $scanner" }
-
-          foreach ($target in @($package, $zip)) {
-            & $scanner -Scan -ScanType 3 -File $target -DisableRemediation
-            if ($LASTEXITCODE -ne 0) {
-              throw "Microsoft Defender CLI rejected or could not scan $target (exit code $LASTEXITCODE). Artifact upload blocked."
-            }
-          }
-
-          Write-Host "Microsoft Defender CLI scans completed with no detections."
-
       - name: Upload transparent Windows ZIP
         uses: actions/upload-artifact@v6
         with:

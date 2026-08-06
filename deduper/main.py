@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import messagebox
 
 from deduper.app import DeduperApp
+from deduper.bye_bitch import ByeBitchMixin
 from deduper.certified_slider import install_certified_slider_lock
 from deduper.config import ConfigError, app_directory, parse_config
 from deduper.database import Database
@@ -17,6 +18,10 @@ from deduper.r2 import R2Store
 from deduper.ready_lifecycle import install_ready_lifecycle
 from deduper.review_ui import install_review_ui_hardening
 from deduper.smart_app import SmartDeduperApp
+
+
+class CertifiedDeduperApp(ByeBitchMixin, SmartDeduperApp):
+    """Production app with certified-family BYE BITCH behavior."""
 
 
 def main() -> int:
@@ -35,7 +40,7 @@ def main() -> int:
         return 2
 
     install_review_ui_hardening(DeduperApp)
-    install_certified_slider_lock(SmartDeduperApp)
+    install_certified_slider_lock(CertifiedDeduperApp)
     database = Database(data_directory / "gparty-deduper.sqlite3")
     try:
         migrate_and_recover(database)
@@ -55,7 +60,7 @@ def main() -> int:
     evidence = EvidenceStore(data_directory / "gparty-evidence.sqlite3")
     enforce_evidence_contract(evidence)
     store = R2Store(config)
-    app = SmartDeduperApp(config, database, store, data_directory, evidence=evidence)
+    app = CertifiedDeduperApp(config, database, store, data_directory, evidence=evidence)
     attach_generation_lifecycle(app, generation_startup)
     app.mainloop()
     return 0

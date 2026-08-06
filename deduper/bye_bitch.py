@@ -4,6 +4,7 @@ from tkinter import ttk
 
 from .certified_group_admission import admit_closed_frontier_group, preview_projection
 from .evidence_inventory import reconcile_asset_inventory
+from .family_repair_queue import FamilyRepairQueue
 from .frontier_worker import scan_closed_group
 from .matcher import partition_exact_duplicates
 
@@ -17,11 +18,14 @@ class ByeBitchMixin:
     the surviving members priority frontier recertification.
     """
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._family_repair_queue = FamilyRepairQueue(self.database)
+        self.after(1000, self._resume_pending_family_repairs)
+
     def _build(self) -> None:
         super()._build()
 
-        # Replace the old one-sided center action with one unmistakable action under
-        # each preview. Both buttons deliberately use Claire's requested label.
         self.reverse_delete_button.pack_forget()
         self.left_bye_bitch_button = ttk.Button(
             self.left_preview.master,
@@ -37,6 +41,20 @@ class ByeBitchMixin:
             command=lambda: self._bye_bitch("right"),
         )
         self.right_bye_bitch_button.pack(fill="x", padx=8, pady=(0, 8))
+
+    def _resume_pending_family_repairs(self) -> None:
+        """Restart certification automatically when a crash left repair work pending."""
+        if not hasattr(self, "_family_repair_queue"):
+            return
+        if not self._family_repair_queue.has_pending():
+            return
+        if self.busy or self.reverse_delete_busy:
+            self.after(1000, self._resume_pending_family_repairs)
+            return
+        self.status.set(
+            "Recovering interrupted family repair first — surviving partners remain safe and hidden."
+        )
+        self.start_scan()
 
     def _set_review_state(self, enabled: bool) -> None:
         super()._set_review_state(enabled)
@@ -93,6 +111,20 @@ class ByeBitchMixin:
             self._refresh_pairs()
             return
 
+        priority_keys = tuple(
+            [protected_key]
+            + sorted(
+                member
+                for member in family.members
+                if member not in {deleted_key, protected_key}
+            )
+        )
+        repair_id = self._family_repair_queue.enqueue(
+            deleted_key,
+            protected_key,
+            priority_keys,
+        )
+
         self.reverse_delete_busy = True
         self._set_action_state()
         self._set_review_state(True)
@@ -117,8 +149,10 @@ class ByeBitchMixin:
                 if index_error:
                     self.database.queue_index_cleanup(deleted)
                 if not deleted:
+                    self._family_repair_queue.complete(repair_id)
                     self._ui(
                         self._bye_bitch_finished,
+                        None,
                         None,
                         f"BYE BITCH FAILED — {result_text}",
                     )
@@ -139,10 +173,17 @@ class ByeBitchMixin:
                 )
                 if index_error:
                     message += " Gallery index cleanup was saved for automatic retry."
-                self._ui(self._bye_bitch_finished, invalidation.recertify_keys, message)
-            except Exception as exc:
                 self._ui(
                     self._bye_bitch_finished,
+                    repair_id,
+                    invalidation.recertify_keys,
+                    message,
+                )
+            except Exception as exc:
+                self._family_repair_queue.mark_pending(repair_id)
+                self._ui(
+                    self._bye_bitch_finished,
+                    None,
                     None,
                     f"BYE BITCH FAILED — {type(exc).__name__}: {exc}",
                 )
@@ -151,6 +192,7 @@ class ByeBitchMixin:
 
     def _bye_bitch_finished(
         self,
+        repair_id: int | None,
         recertify_keys: tuple[str, ...] | None,
         message: str,
     ) -> None:
@@ -160,11 +202,20 @@ class ByeBitchMixin:
         self._refresh_pairs()
         self._set_action_state()
         self._set_review_state(bool(self.pairs))
-        if recertify_keys:
-            self.executor.submit(self._recertify_bye_bitch_family, recertify_keys)
+        if repair_id is not None and recertify_keys:
+            self.executor.submit(
+                self._recertify_bye_bitch_family,
+                repair_id,
+                recertify_keys,
+            )
 
-    def _recertify_bye_bitch_family(self, priority_keys: tuple[str, ...]) -> None:
+    def _recertify_bye_bitch_family(
+        self,
+        repair_id: int,
+        priority_keys: tuple[str, ...],
+    ) -> None:
         """Recertify the damaged family first without hiding unrelated families."""
+        self._family_repair_queue.mark_running(repair_id)
         try:
             inventory = self.store.list_assets()
             evidence_sync = reconcile_asset_inventory(self.evidence, inventory)
@@ -179,6 +230,7 @@ class ByeBitchMixin:
             slider = int(round(self.slider.get()))
             queue = getattr(self, "_active_certified_queue", None)
             if queue is None:
+                self._family_repair_queue.mark_pending(repair_id)
                 return
 
             completed = 0
@@ -207,6 +259,7 @@ class ByeBitchMixin:
                     )
                     self._ui(self._refresh_pairs)
 
+            self._family_repair_queue.complete(repair_id)
             self._ui(
                 self.status.set,
                 (
@@ -217,10 +270,11 @@ class ByeBitchMixin:
                 ),
             )
         except Exception as exc:
+            self._family_repair_queue.mark_pending(repair_id)
             self._ui(
                 self.status.set,
                 (
-                    "Deletion succeeded, but priority family recertification needs the next scan — "
+                    "Deletion succeeded; priority family repair remains saved for automatic retry — "
                     f"{type(exc).__name__}: {exc}"
                 ),
             )

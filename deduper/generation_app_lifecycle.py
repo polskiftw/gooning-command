@@ -101,6 +101,18 @@ class GenerationAppLifecycle:
         if self.app.pairs:
             self.app.pair_index = min(active.saved_queue_position, len(self.app.pairs) - 1)
 
+    def _hide_stale_projection(self) -> None:
+        """Remove stale rows from review without touching rollback generation data."""
+        self.app.database.replace_pairs((), preserve_exclusions=False)
+        self.app.pair_index = 0
+        self.app._refresh_pairs()
+        set_empty_message = getattr(self.app, "_set_empty_pair_message", None)
+        if set_empty_message is not None:
+            set_empty_message(
+                "R2 changed. The previous queue is hidden because it is no longer certified "
+                "for the current inventory. A replacement certified queue is building now."
+            )
+
     def _set_slider(self, value: int) -> None:
         guard_exists = hasattr(self.app, "_slider_guard")
         if guard_exists:
@@ -126,8 +138,6 @@ class GenerationAppLifecycle:
     def _apply_snapshot(self, snapshot: StartupSnapshot) -> None:
         self.last_snapshot = snapshot
         self.app._inventory_verified_for_delete = snapshot.destructive_actions_enabled
-        self.app.status.set(startup_status_text(snapshot))
-        self._refresh_controls()
 
         # Preserve the single startup inventory snapshot for the staging builder.
         # A rebuild must consume this tuple rather than silently listing R2 again.
@@ -135,13 +145,26 @@ class GenerationAppLifecycle:
         self.app._startup_generation_phase = snapshot.phase
 
         if snapshot.rebuild_required:
+            # A queue certified against a different inventory must not remain in
+            # the review surface. Keep the immutable generation in its store for
+            # rollback, but remove its mutable UI projection immediately.
+            self._hide_stale_projection()
+            self.app.status.set(
+                "R2 inventory changed — previous queue hidden — rebuilding certified queue — "
+                "deletion locked"
+            )
+            self._refresh_controls()
+
             # Validation already materialized the one authoritative startup
             # inventory snapshot. Automatically build the replacement without
             # requiring a manual button or performing a second R2 listing.
             self.app.after(0, self.app.start_scan)
+            return
+
+        self.app.status.set(startup_status_text(snapshot))
+        self._refresh_controls()
 
     def _refresh_controls(self) -> None:
         self.app._set_action_state()
         self.app._set_review_state(bool(self.app.pairs))
         self.app._refresh_index_boundary(apply=False)
-

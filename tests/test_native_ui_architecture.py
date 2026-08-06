@@ -2,6 +2,7 @@ from pathlib import Path
 import unittest
 
 
+# These tests keep the production review UI native and single-owned.
 class NativeUiArchitectureTests(unittest.TestCase):
     def test_production_ui_has_no_obsolete_reverse_delete_path(self) -> None:
         sources = "\n".join(

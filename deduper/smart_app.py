@@ -5,10 +5,10 @@ from .certified_queue import CertifiedQueue
 from .evidence_inventory import reconcile_asset_inventory
 from .fast_app import FastDeduperApp
 from .focused_recertification import recertify_added_or_changed_assets
-from .matcher import partition_exact_duplicates
 from .progressive_group_indexer import run_progressive_group_index
 from .progressive_indexer import IndexingCancelled
 from .scanner import scan_assets
+from .survivor_orientation import partition_exact_duplicates
 
 
 class SmartDeduperApp(FastDeduperApp):
@@ -59,7 +59,10 @@ class SmartDeduperApp(FastDeduperApp):
                 )
 
             assets = self.database.all_hashed_assets()
-            visual_assets, sha_deletions = partition_exact_duplicates(assets)
+            visual_assets, sha_deletions = partition_exact_duplicates(
+                assets,
+                self.config.survivor_policy,
+            )
             sha_target_count = self.database.replace_sha_deletions(sha_deletions)
             certified_queue = CertifiedQueue()
             self._active_certified_queue = certified_queue
@@ -118,6 +121,7 @@ class SmartDeduperApp(FastDeduperApp):
                     self.evidence,
                     visual_assets,
                     result,
+                    survivor_policy=self.config.survivor_policy,
                 )
                 if result.group is None:
                     self._ui(

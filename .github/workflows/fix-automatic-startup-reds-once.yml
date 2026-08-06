@@ -1,0 +1,28 @@
+name: Fix Automatic Startup Reds Once
+
+on:
+  push:
+    branches:
+      - deduper-cache-foundation
+    paths:
+      - "tools/fix_automatic_startup_reds_once.py"
+      - ".github/workflows/fix-automatic-startup-reds-once.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: python tools/fix_automatic_startup_reds_once.py
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/fix-automatic-startup-reds-once.yml tools/fix_automatic_startup_reds_once.py
+          git add deduper/app.py deduper/certified_app.py tests/test_generation_app_lifecycle.py tests/test_automatic_certified_startup.py
+          git commit -m "Remove manual scan control natively"
+          git push origin HEAD:deduper-cache-foundation

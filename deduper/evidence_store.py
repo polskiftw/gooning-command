@@ -64,6 +64,12 @@ class InventoryRecord:
 
 
 @dataclass(frozen=True)
+class EvidenceMetadataCheckpoint:
+    inventory: tuple[InventoryRecord, ...]
+    state: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
 class EvidenceEdge:
     left_key: str
     right_key: str
@@ -152,6 +158,56 @@ class EvidenceStore:
             """,
             (key, value),
         )
+
+    def metadata_checkpoint(self) -> EvidenceMetadataCheckpoint:
+        """Capture authoritative inventory and build-state metadata.
+
+        Comparison edges are deliberately excluded: they are reusable evidence and
+        may safely survive an abandoned build. The inventory identity and certified
+        boundary are restored unless the replacement generation is promoted.
+        """
+        with self._lock:
+            inventory_rows = self.connection.execute(
+                """
+                SELECT key, size, etag, last_modified
+                FROM inventory_snapshot ORDER BY key
+                """
+            ).fetchall()
+            state_rows = self.connection.execute(
+                "SELECT key, value FROM cache_state ORDER BY key"
+            ).fetchall()
+        return EvidenceMetadataCheckpoint(
+            inventory=tuple(
+                InventoryRecord(
+                    key=str(row["key"]),
+                    size=int(row["size"]),
+                    etag=str(row["etag"]),
+                    last_modified=str(row["last_modified"]),
+                )
+                for row in inventory_rows
+            ),
+            state=tuple((str(row["key"]), str(row["value"])) for row in state_rows),
+        )
+
+    def restore_metadata(self, checkpoint: EvidenceMetadataCheckpoint) -> None:
+        """Restore the active evidence identity after an unpromoted build."""
+        with self._lock, self.connection:
+            self.connection.execute("DELETE FROM inventory_snapshot")
+            self.connection.executemany(
+                """
+                INSERT INTO inventory_snapshot (key, size, etag, last_modified)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    (item.key, item.size, item.etag, item.last_modified)
+                    for item in checkpoint.inventory
+                ),
+            )
+            self.connection.execute("DELETE FROM cache_state")
+            self.connection.executemany(
+                "INSERT INTO cache_state (key, value) VALUES (?, ?)",
+                checkpoint.state,
+            )
 
     def replace_inventory_snapshot(self, records: Iterable[InventoryRecord]) -> str:
         materialized = sorted(records, key=lambda item: item.key)

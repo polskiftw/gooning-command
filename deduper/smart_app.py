@@ -33,6 +33,14 @@ class SmartDeduperApp(FastDeduperApp):
             self._ui(self.status.set, "Connecting to R2 and reading inventory…")
             self.store.verify()
             inventory = self.store.list_assets()
+            evidence_checkpoint = self.evidence.metadata_checkpoint()
+            evidence_promoted = False
+
+            def abandon_evidence(message: str) -> str:
+                if not evidence_promoted:
+                    self.evidence.restore_metadata(evidence_checkpoint)
+                return message
+
             old_fingerprint = self.evidence.get_state("inventory_fingerprint")
             old_boundary = self.evidence.loosest_complete_slider()
             evidence_sync = reconcile_asset_inventory(self.evidence, inventory)
@@ -53,9 +61,10 @@ class SmartDeduperApp(FastDeduperApp):
                 self.scan_cancel,
             )
             if self.scan_cancel.is_set() and completed < len(pending):
-                return (
+                return abandon_evidence(
                     f"Scan stopped safely. Saved {completed}/{len(pending)} completed objects; "
-                    "unfinished objects will resume next scan. NUKE remains locked."
+                    "unfinished objects will resume next scan. Active evidence metadata was "
+                    "restored and NUKE remains locked."
                 )
 
             assets = self.database.all_hashed_assets()
@@ -186,11 +195,11 @@ class SmartDeduperApp(FastDeduperApp):
             except IndexingCancelled:
                 boundary = self.evidence.loosest_complete_slider()
                 boundary_text = "none" if boundary is None else str(boundary)
-                return (
+                return abandon_evidence(
                     f"Indexing stopped safely after {completed_bands} completed bands and "
                     f"{completed_groups} staged whole families; computed through slider "
-                    f"{boundary_text}. Staging was not promoted; the previous certified queue "
-                    "remains unchanged and NUKE remains locked."
+                    f"{boundary_text}. Staging was not promoted; active evidence metadata and "
+                    "the previous certified queue remain unchanged; NUKE remains locked."
                 )
 
             observed_edges = self.evidence.edge_count()
@@ -237,6 +246,7 @@ class SmartDeduperApp(FastDeduperApp):
                         self._generation_lifecycle.startup.legacy_view_only_generation_id
                     ),
                 )
+                evidence_promoted = True
                 self._scan_completed_current_inventory = True
                 safety_summary = (
                     f"atomically promoted {promoted_pair_count} certified review pairs; "
@@ -246,14 +256,16 @@ class SmartDeduperApp(FastDeduperApp):
                     for repair in pending_repairs:
                         repair_queue.complete(repair.repair_id)
             elif errors:
+                self.evidence.restore_metadata(evidence_checkpoint)
                 safety_summary = (
-                    f"staging not promoted; previous certified queue retained; "
-                    f"NUKE remains locked because {errors} hash errors remain"
+                    f"staging not promoted; active evidence metadata and previous certified "
+                    f"queue retained; NUKE remains locked because {errors} hash errors remain"
                 )
             else:
+                self.evidence.restore_metadata(evidence_checkpoint)
                 safety_summary = (
-                    "staging not promoted; previous certified queue retained; "
-                    "NUKE remains locked because the full index is incomplete"
+                    "staging not promoted; active evidence metadata and previous certified "
+                    "queue retained; NUKE remains locked because the full index is incomplete"
                 )
             return (
                 f"Scan complete. {new_count} new, {changed_count} changed, "

@@ -23,9 +23,10 @@ class SmartDeduperApp(FastDeduperApp):
         self._inventory_verified_for_delete = False
         self._scan_completed_current_inventory = False
 
-        # The active certified generation remains visible and immutable while
-        # a replacement is built privately. Busy-state gating disables review
-        # actions without clearing or progressively rewriting the saved queue.
+        # A stale startup projection has already been hidden by the generation
+        # lifecycle. Newly certified families are published progressively while
+        # destructive actions remain locked until the replacement generation is
+        # fully completed and promoted.
         self._set_action_state()
         self._set_review_state(bool(self.pairs))
 
@@ -82,6 +83,7 @@ class SmartDeduperApp(FastDeduperApp):
             sha_target_count = len(sha_deletions)
             certified_queue = CertifiedQueue()
             certified_queue.admit_sha_deletions(sha_deletions)
+            self._active_certified_queue = certified_queue
             self._ui(
                 self._set_empty_pair_message,
                 "Indexing from Strict toward Loose…\n\n"
@@ -131,6 +133,14 @@ class SmartDeduperApp(FastDeduperApp):
             completed_bands = 0
             completed_groups = 0
 
+            def publish_certified_queue() -> int:
+                visible_count = self.database.replace_pairs(
+                    preview_projection(certified_queue),
+                    preserve_exclusions=True,
+                )
+                self._ui(self._refresh_pairs)
+                return visible_count
+
             def group_progress(band, result, seed_count: int) -> None:
                 nonlocal completed_groups
                 admission = admit_closed_frontier_group(
@@ -151,16 +161,19 @@ class SmartDeduperApp(FastDeduperApp):
                         ),
                     )
                     return
-                if admission.admitted:
-                    completed_groups += 1
-                staged_count = len(certified_queue.pairs())
+                if not admission.admitted:
+                    return
+
+                completed_groups += 1
+                visible_count = publish_certified_queue()
                 self._ui(
                     self.status.set,
                     (
-                        f"STAGED whole family {completed_groups}: "
+                        f"CERTIFIED whole family {completed_groups}: "
                         f"{len(result.group.members)} members at slider {band.loosest_slider}; "
-                        f"{staged_count} replacement review pairs prepared privately. "
-                        "The active certified queue remains unchanged until atomic promotion."
+                        f"{visible_count} certified review pairs are now available in preview. "
+                        "Scanning continues for additional families; deletion remains locked "
+                        "until the replacement generation is fully complete."
                     ),
                 )
 
@@ -170,10 +183,10 @@ class SmartDeduperApp(FastDeduperApp):
                 self._ui(
                     self.status.set,
                     (
-                        f"STAGED band {result.band.strictest_slider}–"
+                        f"Band {result.band.strictest_slider}–"
                         f"{result.band.loosest_slider} complete: "
-                        f"{len(certified_queue.pairs())} replacement pairs prepared privately. "
-                        "Nothing has been published to review yet."
+                        f"{len(certified_queue.pairs())} certified review pairs currently visible. "
+                        "Scanning continues toward Loose."
                     ),
                 )
 
@@ -204,9 +217,9 @@ class SmartDeduperApp(FastDeduperApp):
                 boundary_text = "none" if boundary is None else str(boundary)
                 return abandon_evidence(
                     f"Indexing stopped safely after {completed_bands} completed bands and "
-                    f"{completed_groups} staged whole families; computed through slider "
-                    f"{boundary_text}. Staging was not promoted; active evidence metadata and "
-                    "the previous certified queue remain unchanged; NUKE remains locked."
+                    f"{completed_groups} certified whole families; computed through slider "
+                    f"{boundary_text}. Already certified families remain visible, but the "
+                    "replacement generation was not completed and NUKE remains locked."
                 )
 
             observed_edges = self.evidence.edge_count()
@@ -226,7 +239,7 @@ class SmartDeduperApp(FastDeduperApp):
                     f"evidence inventory: {len(delta.added)} added, "
                     f"{len(delta.changed)} changed, {len(delta.removed)} removed"
                 )
-            promoted_pair_count = 0
+            promoted_pair_count = len(certified_queue.pairs())
             if errors == 0 and boundary == 0:
                 generations = self._generation_lifecycle.startup.store
                 builder = CertifiedGenerationBuilder(
@@ -237,10 +250,7 @@ class SmartDeduperApp(FastDeduperApp):
                     matcher_version=matcher_identity(self.config.survivor_policy),
                 )
                 build_result = builder.build()
-                promoted_pair_count = self.database.replace_pairs(
-                    preview_projection(certified_queue),
-                    preserve_exclusions=True,
-                )
+                promoted_pair_count = publish_certified_queue()
                 self.database.replace_sha_deletions(sha_deletions)
                 self.database.set_matching_state("complete")
                 self._active_certified_queue = certified_queue
@@ -256,8 +266,8 @@ class SmartDeduperApp(FastDeduperApp):
                 evidence_promoted = True
                 self._scan_completed_current_inventory = True
                 safety_summary = (
-                    f"atomically promoted {promoted_pair_count} certified review pairs; "
-                    "NUKE unlocked for this app session"
+                    f"promoted the completed generation containing {promoted_pair_count} "
+                    "certified review pairs; NUKE unlocked for this app session"
                 )
                 if recertification_queue is not None:
                     for repair in pending_recertifications:
@@ -265,14 +275,16 @@ class SmartDeduperApp(FastDeduperApp):
             elif errors:
                 self.evidence.restore_metadata(evidence_checkpoint)
                 safety_summary = (
-                    f"staging not promoted; active evidence metadata and previous certified "
-                    f"queue retained; NUKE remains locked because {errors} hash errors remain"
+                    f"completed generation not promoted; {promoted_pair_count} individually "
+                    f"certified preview pairs remain visible; NUKE remains locked because "
+                    f"{errors} hash errors remain"
                 )
             else:
                 self.evidence.restore_metadata(evidence_checkpoint)
                 safety_summary = (
-                    "staging not promoted; active evidence metadata and previous certified "
-                    "queue retained; NUKE remains locked because the full index is incomplete"
+                    f"completed generation not promoted; {promoted_pair_count} individually "
+                    "certified preview pairs remain visible; NUKE remains locked because the "
+                    "full index is incomplete"
                 )
             return (
                 f"Scan complete. {new_count} new, {changed_count} changed, "

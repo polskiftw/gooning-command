@@ -22,6 +22,7 @@ class EvidenceMetadataCheckpointTests(unittest.TestCase):
             self.assertTrue(store.inventory_matches(original))
             self.assertEqual(store.inventory_count(), 1)
             self.assertEqual(store.loosest_complete_slider(), 25)
+            self.assertEqual(store.get_state("build_status"), "empty")
             store.close()
 
     def test_scan_architecture_restores_metadata_without_promotion(self) -> None:

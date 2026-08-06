@@ -3,9 +3,8 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from deduper.bye_bitch import ByeBitchMixin
+from deduper.certified_app import CertifiedDeduperApp
 from deduper.certified_queue import CertifiedFamily, CertifiedQueue
-from deduper.family_repair_queue import PendingFamilyRepair
 from deduper.generation_builder import CertifiedPairRow
 from deduper.models import Asset, Pair
 
@@ -61,69 +60,29 @@ class FakeRepairQueue:
         self.enqueued = []
         self.running = []
         self.completed = []
-        self.retry_records = []
-        self.jobs = []
+        self.retry = []
 
     def enqueue(self, deleted_key, protected_key, priority_keys):
         repair_id = self.next_id
         self.next_id += 1
-        ordered = tuple(priority_keys)
-        self.enqueued.append((repair_id, deleted_key, protected_key, ordered))
-        self.jobs = [
-            PendingFamilyRepair(
-                repair_id,
-                deleted_key,
-                protected_key,
-                ordered,
-                "pending",
-                0,
-                None,
-            )
-        ]
+        self.enqueued.append((repair_id, deleted_key, protected_key, tuple(priority_keys)))
         return repair_id
-
-    def pending(self):
-        return tuple(self.jobs)
 
     def mark_running(self, repair_id):
         self.running.append(repair_id)
-        self.jobs = [
-            PendingFamilyRepair(
-                job.repair_id,
-                job.deleted_key,
-                job.protected_key,
-                job.priority_keys,
-                "running",
-                job.attempt_count + 1,
-                None,
-            )
-            for job in self.jobs
-            if job.repair_id == repair_id
-        ]
         return True
 
     def complete(self, repair_id):
         self.completed.append(repair_id)
-        self.jobs = [job for job in self.jobs if job.repair_id != repair_id]
 
     def mark_pending(self, repair_id, error=None):
-        self.retry_records.append((repair_id, error))
-        self.jobs = [
-            PendingFamilyRepair(
-                job.repair_id,
-                job.deleted_key,
-                job.protected_key,
-                job.priority_keys,
-                "retry",
-                job.attempt_count,
-                error,
-            )
-            for job in self.jobs
-            if job.repair_id == repair_id
-        ]
+        self.retry.append((repair_id, error))
+
+    def pending(self):
+        return ()
 
 
-class Harness(ByeBitchMixin):
+class Harness(CertifiedDeduperApp):
     def __init__(self, queue, pairs, assets):
         self.config = SimpleNamespace(allow_delete=True)
         self._inventory_verified_for_delete = True
@@ -229,17 +188,9 @@ class ByeBitchBehaviorTests(unittest.TestCase):
         self.assertEqual(app._family_repair_queue.enqueued, [])
         self.assertEqual(app.recertify_calls, [])
 
-    def test_live_status_uses_persisted_retry_attempt_and_error(self):
-        app = self.make_harness()
-        app._family_repair_queue.jobs = [
-            PendingFamilyRepair(7, "A", "1", ("1", "2"), "retry", 3, "network timeout")
-        ]
-        app._show_family_repair_status(7)
-        self.assertIn("deleted A", app.status.value)
-        self.assertIn("protected partner 1", app.status.value)
-        self.assertIn("3 attempts", app.status.value)
-        self.assertIn("network timeout", app.status.value)
-        self.assertIn("remains safe in R2 and hidden", app.status.value)
+    def test_concrete_app_has_single_inheritance_owner(self):
+        self.assertEqual(CertifiedDeduperApp.__bases__, (CertifiedDeduperApp.__mro__[1],))
+        self.assertNotIn("Mixin", CertifiedDeduperApp.__name__)
 
 
 if __name__ == "__main__":

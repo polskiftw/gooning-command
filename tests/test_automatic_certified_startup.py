@@ -13,6 +13,7 @@ class AutomaticCertifiedStartupTests(unittest.TestCase):
         self.assertIn("self.app.after(0, self.app.start_scan)", source)
 
     def test_automatic_rebuild_reuses_validation_inventory(self) -> None:
+        # The rebuild must consume validation's single authoritative R2 snapshot.
         source = Path("deduper/smart_app.py").read_text()
         self.assertIn("startup_inventory = getattr", source)
         self.assertIn("inventory = list(startup_inventory)", source)

@@ -102,6 +102,7 @@ class FamilyRecertificationSchemaMigrationTests(unittest.TestCase):
             db.close()
 
     def test_empty_malformed_modern_tables_are_rebuilt_canonically(self) -> None:
+        # Reproduces the later Windows startup failure where deleted_key was absent.
         with tempfile.TemporaryDirectory() as directory:
             db = CertifiedDatabase(Path(directory) / "deduper.sqlite3")
             with db.connection:

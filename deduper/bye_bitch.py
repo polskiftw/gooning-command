@@ -4,7 +4,8 @@ from tkinter import ttk
 
 from .certified_group_admission import admit_closed_frontier_group, preview_projection
 from .evidence_inventory import reconcile_asset_inventory
-from .family_repair_queue import FamilyRepairQueue
+from .family_repair_queue import FamilyRepairQueue, PendingFamilyRepair
+from .family_repair_status import family_repair_status_text
 from .frontier_worker import scan_closed_group
 from .matcher import partition_exact_duplicates
 
@@ -42,18 +43,32 @@ class ByeBitchMixin:
         )
         self.right_bye_bitch_button.pack(fill="x", padx=8, pady=(0, 8))
 
+    def _family_repair_job(self, repair_id: int) -> PendingFamilyRepair | None:
+        return next(
+            (
+                job
+                for job in self._family_repair_queue.pending()
+                if job.repair_id == repair_id
+            ),
+            None,
+        )
+
+    def _show_family_repair_status(self, repair_id: int) -> None:
+        job = self._family_repair_job(repair_id)
+        if job is not None:
+            self.status.set(family_repair_status_text(job))
+
     def _resume_pending_family_repairs(self) -> None:
         """Restart certification automatically when a crash left repair work pending."""
         if not hasattr(self, "_family_repair_queue"):
             return
-        if not self._family_repair_queue.has_pending():
+        pending = self._family_repair_queue.pending()
+        if not pending:
             return
         if self.busy or self.reverse_delete_busy:
             self.after(1000, self._resume_pending_family_repairs)
             return
-        self.status.set(
-            "Recovering interrupted family repair first — surviving partners remain safe and hidden."
-        )
+        self.status.set(family_repair_status_text(pending[0]))
         self.start_scan()
 
     def _set_review_state(self, enabled: bool) -> None:
@@ -180,12 +195,21 @@ class ByeBitchMixin:
                     message,
                 )
             except Exception as exc:
-                self._family_repair_queue.mark_pending(repair_id)
+                self._family_repair_queue.mark_pending(
+                    repair_id,
+                    f"{type(exc).__name__}: {exc}",
+                )
+                job = self._family_repair_job(repair_id)
+                message = (
+                    family_repair_status_text(job)
+                    if job is not None
+                    else f"BYE BITCH FAILED — {type(exc).__name__}: {exc}"
+                )
                 self._ui(
                     self._bye_bitch_finished,
                     None,
                     None,
-                    f"BYE BITCH FAILED — {type(exc).__name__}: {exc}",
+                    message,
                 )
 
         self.executor.submit(worker)
@@ -215,7 +239,10 @@ class ByeBitchMixin:
         priority_keys: tuple[str, ...],
     ) -> None:
         """Recertify the damaged family first without hiding unrelated families."""
-        self._family_repair_queue.mark_running(repair_id)
+        if not self._family_repair_queue.mark_running(repair_id):
+            self._ui(self._show_family_repair_status, repair_id)
+            return
+        self._ui(self._show_family_repair_status, repair_id)
         try:
             inventory = self.store.list_assets()
             evidence_sync = reconcile_asset_inventory(self.evidence, inventory)
@@ -230,7 +257,11 @@ class ByeBitchMixin:
             slider = int(round(self.slider.get()))
             queue = getattr(self, "_active_certified_queue", None)
             if queue is None:
-                self._family_repair_queue.mark_pending(repair_id)
+                self._family_repair_queue.mark_pending(
+                    repair_id,
+                    "Certified family queue was unavailable",
+                )
+                self._ui(self._show_family_repair_status, repair_id)
                 return
 
             completed = 0
@@ -263,18 +294,15 @@ class ByeBitchMixin:
             self._ui(
                 self.status.set,
                 (
-                    f"Family apology complete — {completed} repaired certified families admitted "
-                    f"first; inventory delta: {len(evidence_sync.delta.added)} added, "
+                    f"Family repair complete — {completed} certified families admitted first; "
+                    f"inventory delta: {len(evidence_sync.delta.added)} added, "
                     f"{len(evidence_sync.delta.changed)} changed, "
                     f"{len(evidence_sync.delta.removed)} removed."
                 ),
             )
         except Exception as exc:
-            self._family_repair_queue.mark_pending(repair_id)
-            self._ui(
-                self.status.set,
-                (
-                    "Deletion succeeded; priority family repair remains saved for automatic retry — "
-                    f"{type(exc).__name__}: {exc}"
-                ),
+            self._family_repair_queue.mark_pending(
+                repair_id,
+                f"{type(exc).__name__}: {exc}",
             )
+            self._ui(self._show_family_repair_status, repair_id)

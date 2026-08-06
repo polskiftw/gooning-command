@@ -1,0 +1,28 @@
+name: Native Generation Lifecycle Once
+
+on:
+  push:
+    branches:
+      - deduper-cache-foundation
+    paths:
+      - "tools/native_generation_lifecycle_once.py"
+      - ".github/workflows/native-generation-lifecycle-once.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  refactor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: python tools/native_generation_lifecycle_once.py
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/native-generation-lifecycle-once.yml tools/native_generation_lifecycle_once.py
+          git add deduper/certified_app.py deduper/main.py deduper/generation_app_lifecycle.py tests/test_native_generation_lifecycle_architecture.py
+          git commit -m "Make generation lifecycle native"
+          git push origin HEAD:deduper-cache-foundation

@@ -28,19 +28,24 @@ class FamilyRepairQueueTests(unittest.TestCase):
         self.assertEqual(restored[0].deleted_key, "A")
         self.assertEqual(restored[0].protected_key, "1")
         self.assertEqual(restored[0].priority_keys, ("1", "2", "3"))
+        self.assertEqual(restored[0].status, "pending")
+        self.assertEqual(restored[0].attempt_count, 0)
+        self.assertIsNone(restored[0].last_error)
         reopened.close()
         temporary.cleanup()
 
-    def test_running_job_is_recovered_as_pending_work(self):
+    def test_running_job_is_recovered_as_visible_retry_work(self):
         temporary, database = self.make_database()
         queue = FamilyRepairQueue(database)
         repair_id = queue.enqueue("A", "1", ("1", "2"))
         self.assertTrue(queue.mark_running(repair_id))
 
-        # Constructing the queue represents an app restart and releases the stale lease.
         restored_queue = FamilyRepairQueue(database)
         restored = restored_queue.pending()
         self.assertEqual([job.repair_id for job in restored], [repair_id])
+        self.assertEqual(restored[0].status, "retry")
+        self.assertEqual(restored[0].attempt_count, 1)
+        self.assertIn("closed during family repair", restored[0].last_error.lower())
         self.assertTrue(restored_queue.mark_running(repair_id))
         database.close()
         temporary.cleanup()
@@ -102,6 +107,27 @@ class FamilyRepairQueueTests(unittest.TestCase):
 
         self.assertTrue(queue.mark_running(repair_id))
         self.assertFalse(queue.mark_running(repair_id))
+        self.assertEqual(queue.pending()[0].attempt_count, 1)
+        database.close()
+        temporary.cleanup()
+
+    def test_failure_reason_survives_and_next_claim_increments_attempt(self):
+        temporary, database = self.make_database()
+        queue = FamilyRepairQueue(database)
+        repair_id = queue.enqueue("A", "1", ("1", "2"))
+
+        self.assertTrue(queue.mark_running(repair_id))
+        queue.mark_pending(repair_id, "R2 inventory listing failed")
+        failed = queue.pending()[0]
+        self.assertEqual(failed.status, "retry")
+        self.assertEqual(failed.attempt_count, 1)
+        self.assertEqual(failed.last_error, "R2 inventory listing failed")
+
+        self.assertTrue(queue.mark_running(repair_id))
+        claimed = queue.pending()[0]
+        self.assertEqual(claimed.status, "running")
+        self.assertEqual(claimed.attempt_count, 2)
+        self.assertIsNone(claimed.last_error)
         database.close()
         temporary.cleanup()
 

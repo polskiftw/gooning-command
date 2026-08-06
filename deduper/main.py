@@ -4,7 +4,6 @@ import multiprocessing
 import tkinter as tk
 from tkinter import messagebox
 
-from deduper.app import DeduperApp
 from deduper.certified_app import CertifiedDeduperApp
 from deduper.certified_database import CertifiedDatabase
 from deduper.certified_slider import install_certified_slider_lock
@@ -15,7 +14,6 @@ from deduper.evidence_store import EvidenceStore
 from deduper.generation_app_lifecycle import attach_generation_lifecycle
 from deduper.generation_integration import initialize_generation_storage
 from deduper.r2 import R2Store
-from deduper.review_ui import install_review_ui_hardening
 
 
 def main() -> int:
@@ -33,7 +31,6 @@ def main() -> int:
         root.destroy()
         return 2
 
-    install_review_ui_hardening(DeduperApp)
     install_certified_slider_lock(CertifiedDeduperApp)
     database = CertifiedDatabase(data_directory / "gparty-deduper.sqlite3")
     try:

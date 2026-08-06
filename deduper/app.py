@@ -16,6 +16,7 @@ from .hashing import hash_file
 from .links import open_in_firefox, public_media_url
 from .matcher import acquire_pairs
 from .models import Pair
+from .review_ui import preserved_pair_index
 from .preview import (
     MediaPreview,
     PreparedPreview,
@@ -66,6 +67,9 @@ class DeduperApp(tk.Tk):
         self.right_asset_key: str | None = None
         self.preview_requests: dict[MediaPreview, int] = {}
         self.preview_cancellations: dict[MediaPreview, threading.Event] = {}
+        self._review_loaded_preview_keys: dict[MediaPreview, str] = {}
+        self._review_desired_preview_keys: dict[MediaPreview, str] = {}
+        self._review_pending_preview_requests: dict[tuple[MediaPreview, int], str] = {}
         state = self.database.matching_state()
         if state == "complete":
             self.empty_pair_message = "No duplicates found.\n\nThe last comparison completed successfully."
@@ -447,8 +451,17 @@ class DeduperApp(tk.Tk):
         )
 
     def _refresh_pairs(self) -> None:
-        self.pairs = self.database.scan_pairs()
-        self.pair_index = min(self.pair_index, max(0, len(self.pairs) - 1))
+        old_left = self.left_asset_key
+        old_right = self.right_asset_key
+        old_index = self.pair_index
+        refreshed = self.database.scan_pairs()
+        self.pairs = refreshed
+        self.pair_index = preserved_pair_index(
+            refreshed,
+            old_left,
+            old_right,
+            old_index,
+        )
         self._show_current_pair()
 
     def _set_empty_pair_message(self, message: str) -> None:
@@ -458,6 +471,9 @@ class DeduperApp(tk.Tk):
 
     def _show_current_pair(self) -> None:
         if not self.pairs:
+            self._review_loaded_preview_keys.clear()
+            self._review_desired_preview_keys.clear()
+            self._review_pending_preview_requests.clear()
             self.pair_label.configure(text=self.empty_pair_message)
             self.left_asset_key = None
             self.right_asset_key = None
@@ -513,6 +529,9 @@ class DeduperApp(tk.Tk):
             self.status.set(f"COULD NOT OPEN FIREFOX — {exc}")
 
     def _load_preview(self, key: str, widget: MediaPreview) -> None:
+        self._review_desired_preview_keys[widget] = key
+        if self._review_loaded_preview_keys.get(widget) == key:
+            return
         widget.clear()
         previous = self.preview_cancellations.get(widget)
         if previous is not None:
@@ -521,6 +540,7 @@ class DeduperApp(tk.Tk):
         self.preview_cancellations[widget] = cancellation
         request = self.preview_requests.get(widget, 0) + 1
         self.preview_requests[widget] = request
+        self._review_pending_preview_requests[(widget, request)] = key
 
         def fetch() -> None:
             try:
@@ -547,12 +567,15 @@ class DeduperApp(tk.Tk):
         preview: PreparedPreview | None,
         error: str | None,
     ) -> None:
+        key = self._review_pending_preview_requests.pop((widget, request), None)
         if self.preview_requests.get(widget) != request:
             return
         if error or preview is None:
             widget.clear(f"Preview failed\n{error or 'unknown error'}")
         else:
             widget.load_prepared(preview)
+            if key is not None and self._review_desired_preview_keys.get(widget) == key:
+                self._review_loaded_preview_keys[widget] = key
 
     def _set_review_state(self, enabled: bool) -> None:
         state = "normal" if enabled and not self.review_locked else "disabled"

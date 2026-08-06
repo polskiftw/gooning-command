@@ -12,6 +12,7 @@ class NativeSliderArchitectureTests(unittest.TestCase):
         self.assertIn("self.slider_widget = ttk.Scale", app)
         self.assertIn("def _apply_certified_slider_lock", fast)
         self.assertIn('self.slider_widget.configure(state="disabled")', fast)
+        self.assertGreaterEqual(fast.count("self._apply_certified_slider_lock()"), 4)
 
 
 if __name__ == "__main__":

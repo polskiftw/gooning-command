@@ -9,7 +9,7 @@ class AtomicGenerationScanArchitectureTests(unittest.TestCase):
         self.assertNotIn("self.database.replace_pairs([], preserve_exclusions=True)", smart)
         self.assertIn("CertifiedGenerationBuilder", smart)
         self.assertIn("builder.build()", smart)
-        self.assertIn("previous certified queue retained", smart)
+        self.assertIn("previous certified queue remain unchanged", smart)
         self.assertIn("self._refresh_index_boundary(apply=False)", smart)
         self.assertIn("atomic promotion", smart)
 

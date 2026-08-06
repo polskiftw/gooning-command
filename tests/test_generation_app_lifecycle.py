@@ -45,6 +45,7 @@ class FakeApp:
         self.review_refreshes = []
         self.boundary_refreshes = 0
         self.scan_starts = 0
+        self.empty_pair_message = ""
 
     def start_scan(self):
         self.scan_starts += 1
@@ -63,6 +64,9 @@ class FakeApp:
 
     def _refresh_index_boundary(self, *, apply):
         self.boundary_refreshes += 1
+
+    def _set_empty_pair_message(self, message):
+        self.empty_pair_message = message
 
 
 class GenerationAppLifecycleTests(unittest.TestCase):
@@ -140,11 +144,15 @@ class GenerationAppLifecycleTests(unittest.TestCase):
         self.assertIn("deletion enabled", app.status.get())
         self.assertEqual(app._startup_inventory_snapshot, ())
 
-    def test_rebuild_snapshot_preserves_view_but_keeps_deletion_locked(self):
+    def test_rebuild_snapshot_hides_stale_queue_and_starts_replacement(self):
         store = self.make_store()
         active = self.make_active(store)
         app = FakeApp()
         lifecycle = GenerationAppLifecycle(app, GenerationStartupState(store, active, None))
+        lifecycle._project_active_generation()
+        app.pair_index = 1
+        self.assertEqual(len(app.pairs), 2)
+
         validation = GenerationValidation(
             ValidationState.INVENTORY_CHANGED,
             False,
@@ -160,8 +168,12 @@ class GenerationAppLifecycleTests(unittest.TestCase):
         lifecycle._apply_snapshot(snapshot)
 
         self.assertFalse(app._inventory_verified_for_delete)
-        self.assertIn("view-only", app.status.get())
-        self.assertIn("deletion locked", app.status.get())
+        self.assertEqual(app.pairs, [])
+        self.assertEqual(app.database.projected, [])
+        self.assertEqual(app.pair_index, 0)
+        self.assertFalse(app.review_refreshes[-1])
+        self.assertIn("previous queue hidden", app.status.get())
+        self.assertIn("no longer certified", app.empty_pair_message)
         self.assertEqual(len(app.after_calls), 1)
         delay, callback = app.after_calls[0]
         self.assertEqual(delay, 0)

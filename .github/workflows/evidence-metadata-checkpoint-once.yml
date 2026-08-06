@@ -1,0 +1,28 @@
+name: Evidence Metadata Checkpoint Once
+
+on:
+  push:
+    branches:
+      - deduper-cache-foundation
+    paths:
+      - "tools/evidence_metadata_checkpoint_once.py"
+      - ".github/workflows/evidence-metadata-checkpoint-once.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  refactor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: python tools/evidence_metadata_checkpoint_once.py
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/evidence-metadata-checkpoint-once.yml tools/evidence_metadata_checkpoint_once.py
+          git add deduper/evidence_store.py deduper/smart_app.py tests/test_evidence_metadata_checkpoint.py
+          git commit -m "Restore active evidence metadata after abandoned scans"
+          git push origin HEAD:deduper-cache-foundation

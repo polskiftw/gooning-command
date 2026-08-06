@@ -2,6 +2,12 @@ name: Build Native Hamming Benchmark
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - native-hamming-benchmark
+    paths:
+      - "deduper/native_benchmark/**"
+      - ".github/workflows/build-native-hamming-benchmark.yml"
   pull_request:
     paths:
       - "deduper/native_benchmark/**"

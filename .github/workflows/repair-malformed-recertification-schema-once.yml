@@ -1,0 +1,28 @@
+name: Repair Malformed Recertification Schema Once
+
+on:
+  push:
+    branches:
+      - deduper-cache-foundation
+    paths:
+      - "tools/repair_malformed_recertification_schema_once.py"
+      - ".github/workflows/repair-malformed-recertification-schema-once.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: python tools/repair_malformed_recertification_schema_once.py
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/repair-malformed-recertification-schema-once.yml tools/repair_malformed_recertification_schema_once.py
+          git add deduper/family_recertification_queue.py tests/test_family_recertification_schema_migration.py
+          git commit -m "Repair empty malformed recertification schema"
+          git push origin HEAD:deduper-cache-foundation

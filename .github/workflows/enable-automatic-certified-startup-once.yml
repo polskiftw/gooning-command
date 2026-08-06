@@ -1,0 +1,28 @@
+name: Enable Automatic Certified Startup Once
+
+on:
+  push:
+    branches:
+      - deduper-cache-foundation
+    paths:
+      - "tools/enable_automatic_certified_startup_once.py"
+      - ".github/workflows/enable-automatic-certified-startup-once.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  refactor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: python tools/enable_automatic_certified_startup_once.py
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/enable-automatic-certified-startup-once.yml tools/enable_automatic_certified_startup_once.py
+          git add deduper/certified_app.py deduper/generation_app_lifecycle.py deduper/smart_app.py tests/test_automatic_certified_startup.py
+          git commit -m "Make certified startup fully automatic"
+          git push origin HEAD:deduper-cache-foundation

@@ -4,8 +4,10 @@ import unittest
 
 class AutomaticCertifiedStartupTests(unittest.TestCase):
     def test_manual_scan_button_is_hidden(self) -> None:
-        source = Path("deduper/certified_app.py").read_text()
-        self.assertIn("self.scan_button.pack_forget()", source)
+        base_source = Path("deduper/app.py").read_text()
+        certified_source = Path("deduper/certified_app.py").read_text()
+        self.assertNotIn('text="SCAN"', base_source)
+        self.assertNotIn("scan_button", certified_source)
 
     def test_rebuild_required_starts_automatically(self) -> None:
         source = Path("deduper/generation_app_lifecycle.py").read_text()

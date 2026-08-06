@@ -121,8 +121,6 @@ class DeduperApp(tk.Tk):
 
         actions = tk.Frame(self, background=BG)
         actions.pack(fill="x", padx=14, pady=(0, 8))
-        self.scan_button = ttk.Button(actions, text="SCAN", style="Accent.TButton", command=self.start_scan)
-        self.scan_button.pack(side="left", padx=(0, 8))
         self.nuke_button = ttk.Button(actions, text="NUKE", style="Danger.TButton", command=self.start_nuke)
         self.nuke_button.pack(side="left")
         self.sha_nuke_button = ttk.Button(

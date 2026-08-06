@@ -44,6 +44,10 @@ class FakeApp:
         self.action_refreshes = 0
         self.review_refreshes = []
         self.boundary_refreshes = 0
+        self.scan_starts = 0
+
+    def start_scan(self):
+        self.scan_starts += 1
 
     def after(self, delay_ms, callback):
         self.after_calls.append((delay_ms, callback))
@@ -158,6 +162,11 @@ class GenerationAppLifecycleTests(unittest.TestCase):
         self.assertFalse(app._inventory_verified_for_delete)
         self.assertIn("view-only", app.status.get())
         self.assertIn("deletion locked", app.status.get())
+        self.assertEqual(len(app.after_calls), 1)
+        delay, callback = app.after_calls[0]
+        self.assertEqual(delay, 0)
+        callback()
+        self.assertEqual(app.scan_starts, 1)
 
 
 if __name__ == "__main__":

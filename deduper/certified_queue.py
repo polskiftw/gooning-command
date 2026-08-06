@@ -15,6 +15,16 @@ class CertifiedFamily:
     pairs: tuple[CertifiedPairRow, ...]
 
 
+@dataclass(frozen=True)
+class FamilyInvalidation:
+    """Family-wide result produced after one certified member is deleted."""
+
+    family: CertifiedFamily
+    deleted_key: str
+    protected_key: str
+    recertify_keys: tuple[str, ...]
+
+
 class CertifiedQueue:
     """Growing preview queue of individually final certified families.
 
@@ -49,6 +59,54 @@ class CertifiedQueue:
         for member in normalized.members:
             self._asset_family[member] = normalized.group_id
         return True
+
+    def family_for_asset(self, asset_key: str) -> CertifiedFamily | None:
+        group_id = self._asset_family.get(asset_key)
+        return self._families.get(group_id) if group_id is not None else None
+
+    def family_for_pair(self, left_key: str, right_key: str) -> CertifiedFamily | None:
+        left_family = self.family_for_asset(left_key)
+        right_family = self.family_for_asset(right_key)
+        if left_family is None or right_family is None:
+            return None
+        if left_family.group_id != right_family.group_id:
+            raise ValueError("visible pair members do not belong to the same certified family")
+        return left_family
+
+    def invalidate_for_deletion(
+        self,
+        deleted_key: str,
+        protected_key: str,
+    ) -> FamilyInvalidation:
+        """Remove the whole certified family after one selected member is deleted.
+
+        Every preview row from that family disappears immediately. All still-live
+        family members, led by the explicitly protected opposite side, are returned
+        in deterministic recertification priority order.
+        """
+        family = self.family_for_asset(deleted_key)
+        if family is None:
+            raise KeyError(f"asset {deleted_key} is not in a certified family")
+        if protected_key == deleted_key:
+            raise ValueError("deleted and protected keys must differ")
+        if protected_key not in family.members:
+            raise ValueError("protected key must belong to the same certified family")
+
+        self._families.pop(family.group_id, None)
+        for member in family.members:
+            self._asset_family.pop(member, None)
+
+        surviving = [member for member in family.members if member != deleted_key]
+        recertify = tuple(
+            [protected_key]
+            + sorted(member for member in surviving if member != protected_key)
+        )
+        return FamilyInvalidation(
+            family=family,
+            deleted_key=deleted_key,
+            protected_key=protected_key,
+            recertify_keys=recertify,
+        )
 
     def admit_sha_deletions(self, rows: Iterable[ShaDeletionRow]) -> int:
         added = 0

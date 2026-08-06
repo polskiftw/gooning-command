@@ -19,26 +19,6 @@ class CertifiedDeduperApp(SmartDeduperApp):
         self._family_repair_queue = FamilyRepairQueue(self.database)
         self.after(1000, self._resume_pending_family_repairs)
 
-    def _build(self) -> None:
-        super()._build()
-
-        # The production app owns one immediate-delete control beneath each preview.
-        self.reverse_delete_button.pack_forget()
-        self.left_bye_bitch_button = ttk.Button(
-            self.left_preview.master,
-            text="BYE BITCH",
-            style="Danger.TButton",
-            command=lambda: self._bye_bitch("left"),
-        )
-        self.left_bye_bitch_button.pack(fill="x", padx=8, pady=(0, 8))
-        self.right_bye_bitch_button = ttk.Button(
-            self.right_preview.master,
-            text="BYE BITCH",
-            style="Danger.TButton",
-            command=lambda: self._bye_bitch("right"),
-        )
-        self.right_bye_bitch_button.pack(fill="x", padx=8, pady=(0, 8))
-
     def _resume_pending_family_repairs(self) -> None:
         pending = self._family_repair_queue.pending()
         if not pending:

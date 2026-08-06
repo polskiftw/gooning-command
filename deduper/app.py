@@ -164,12 +164,20 @@ class DeduperApp(tk.Tk):
             foreground=GREEN,
             font=("Segoe UI", 10, "bold"),
         ).grid(row=0, column=0, pady=(0, 6))
+        self.exclude_button_frame = ttk.Frame(comparison)
+        self.exclude_button_frame.grid(row=0, column=1, padx=12, pady=(0, 6))
         self.exclude_button = ttk.Button(
-            comparison,
-            text="EXCLUDE FROM THIS NUKE",
+            self.exclude_button_frame,
+            text="EXCLUDE THIS RUN",
             command=self._exclude_current,
         )
-        self.exclude_button.grid(row=0, column=1, padx=12, pady=(0, 6))
+        self.exclude_button.pack(fill="x")
+        self.permanent_exclude_button = ttk.Button(
+            self.exclude_button_frame,
+            text="EXCLUDE PERMANENTLY",
+            command=self._exclude_permanently,
+        )
+        self.permanent_exclude_button.pack(fill="x", pady=(5, 0))
         tk.Label(
             comparison,
             text="DELETE ON NUKE",
@@ -200,6 +208,13 @@ class DeduperApp(tk.Tk):
         self.left_link.bind("<Button-1>", lambda _event: self._open_asset("left"))
         self.left_meta = tk.Label(left_panel, background=PANEL, foreground=MUTED, justify="left", anchor="w")
         self.left_meta.pack(fill="x", padx=8, pady=(0, 6))
+        self.left_bye_bitch_button = ttk.Button(
+            left_panel,
+            text="BYE BITCH",
+            style="Danger.TButton",
+            command=lambda: self._bye_bitch("left"),
+        )
+        self.left_bye_bitch_button.pack(fill="x", padx=8, pady=(0, 8))
         self.right_link = tk.Label(
             right_panel,
             background=PANEL,
@@ -213,6 +228,13 @@ class DeduperApp(tk.Tk):
         self.right_link.bind("<Button-1>", lambda _event: self._open_asset("right"))
         self.right_meta = tk.Label(right_panel, background=PANEL, foreground=MUTED, justify="left", anchor="w")
         self.right_meta.pack(fill="x", padx=8, pady=(0, 6))
+        self.right_bye_bitch_button = ttk.Button(
+            right_panel,
+            text="BYE BITCH",
+            style="Danger.TButton",
+            command=lambda: self._bye_bitch("right"),
+        )
+        self.right_bye_bitch_button.pack(fill="x", padx=8, pady=(0, 8))
 
         center = tk.Frame(comparison, background=BG, width=190)
         center.grid(row=1, column=1, sticky="ns", padx=12)
@@ -226,13 +248,6 @@ class DeduperApp(tk.Tk):
             font=("Segoe UI", 11, "bold"),
         )
         self.pair_label.pack(expand=True)
-        self.reverse_delete_button = ttk.Button(
-            center,
-            text="DELETE LEFT — KEEP RIGHT",
-            style="Danger.TButton",
-            command=self._delete_left_keep_right,
-        )
-        self.reverse_delete_button.pack(side="bottom", pady=(0, 14))
 
         navigation = tk.Frame(self, background=BG)
         navigation.pack(fill="x", padx=14, pady=7)
@@ -543,7 +558,7 @@ class DeduperApp(tk.Tk):
         state = "normal" if enabled and not self.review_locked else "disabled"
         for button in (self.exclude_button, self.previous_button, self.next_button):
             button.configure(state=state)
-        reverse_state = (
+        delete_state = (
             "normal"
             if enabled
             and not self.review_locked
@@ -551,67 +566,8 @@ class DeduperApp(tk.Tk):
             and self.config.allow_delete
             else "disabled"
         )
-        self.reverse_delete_button.configure(state=reverse_state)
-
-    def _delete_left_keep_right(self) -> None:
-        """Immediately delete only the current left object, with no confirmation."""
-        if (
-            not self.config.allow_delete
-            or self.review_locked
-            or self.reverse_delete_busy
-            or not self.pairs
-        ):
-            return
-        pair = self.pairs[self.pair_index]
-        left = self.database.asset(pair.left_key)
-        if left is None or left.deleted:
-            self._refresh_pairs()
-            return
-
-        self.reverse_delete_busy = True
-        self._set_action_state()
-        self._set_review_state(True)
-        self.status.set(f"Deleting left side now: {pair.left_key}")
-
-        def worker() -> None:
-            try:
-                results, deleted, index_error = self.store.delete_queued(
-                    [(pair.left_key, pair.id, left.size)]
-                )
-                result = results[0][3] if results else "R2 did not return a deletion result"
-                self.database.record_reverse_deletion(
-                    pair.left_key,
-                    pair.right_key,
-                    left.size,
-                    result,
-                )
-                if index_error:
-                    self.database.queue_index_cleanup(deleted)
-
-                if deleted:
-                    message = (
-                        f"Deleted left side and kept right: {pair.right_key}. "
-                        f"Reclaimed {human_bytes(left.size)}."
-                    )
-                    if index_error:
-                        message += (
-                            " Gallery index cleanup was saved for automatic retry: "
-                            f"{index_error}"
-                        )
-                else:
-                    message = f"LEFT DELETE FAILED — {result}"
-            except Exception as exc:
-                message = f"LEFT DELETE FAILED — {type(exc).__name__}: {exc}"
-            self._ui(self._reverse_delete_finished, message)
-
-        self.executor.submit(worker)
-
-    def _reverse_delete_finished(self, message: str) -> None:
-        self.reverse_delete_busy = False
-        self._set_action_state()
-        self.status.set(message)
-        self._refresh_counts()
-        self._refresh_pairs()
+        self.left_bye_bitch_button.configure(state=delete_state)
+        self.right_bye_bitch_button.configure(state=delete_state)
 
     def _exclude_current(self) -> None:
         if not self.pairs:

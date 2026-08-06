@@ -26,7 +26,6 @@ class FastDeduperApp(DeduperApp):
         self._inventory_verified_for_delete = False
         self._scan_completed_current_inventory = False
         super().__init__(*args, **kwargs)
-        self._install_exclusion_buttons()
         self.slider.trace_add("write", self._slider_changed)
         self._refresh_index_boundary(apply=False)
         self._show_current_pair()
@@ -35,26 +34,6 @@ class FastDeduperApp(DeduperApp):
         self.status.set(
             "Safety lock active: run SCAN before NUKE so the current R2 inventory is certified."
         )
-
-    def _install_exclusion_buttons(self) -> None:
-        parent = self.exclude_button.master
-        self.exclude_button.grid_remove()
-        self.exclude_button.destroy()
-
-        self.exclude_button_frame = ttk.Frame(parent)
-        self.exclude_button_frame.grid(row=0, column=1, padx=12, pady=(0, 6))
-        self.exclude_button = ttk.Button(
-            self.exclude_button_frame,
-            text="EXCLUDE THIS RUN",
-            command=self._exclude_current,
-        )
-        self.exclude_button.pack(fill="x")
-        self.permanent_exclude_button = ttk.Button(
-            self.exclude_button_frame,
-            text="EXCLUDE PERMANENTLY",
-            command=self._exclude_permanently,
-        )
-        self.permanent_exclude_button.pack(fill="x", pady=(5, 0))
 
     def _set_action_state(self) -> None:
         super()._set_action_state()
@@ -85,12 +64,14 @@ class FastDeduperApp(DeduperApp):
                 state=state,
             )
         if not self._inventory_verified_for_delete:
-            self.reverse_delete_button.configure(state="disabled")
+            self.left_bye_bitch_button.configure(state="disabled")
+            self.right_bye_bitch_button.configure(state="disabled")
 
     def _set_review_state(self, enabled: bool) -> None:
         super()._set_review_state(enabled)
         if not self._inventory_verified_for_delete:
-            self.reverse_delete_button.configure(state="disabled")
+            self.left_bye_bitch_button.configure(state="disabled")
+            self.right_bye_bitch_button.configure(state="disabled")
         if not hasattr(self, "permanent_exclude_button"):
             return
         state = "normal" if enabled and not self.review_locked else "disabled"
@@ -107,15 +88,6 @@ class FastDeduperApp(DeduperApp):
             )
             return
         super()._start_nuke(sha_only=sha_only)
-
-    def _delete_left_keep_right(self) -> None:
-        if not self._inventory_verified_for_delete:
-            self.status.set(
-                "Immediate deletion is safety-locked. Run a complete, error-free "
-                "SCAN to certify the current R2 inventory first."
-            )
-            return
-        super()._delete_left_keep_right()
 
     def _advance_after_exclusion(self, message: str) -> None:
         self.status.set(message)

@@ -5,10 +5,12 @@ from .certified_queue import CertifiedQueue
 from .evidence_inventory import reconcile_asset_inventory
 from .fast_app import FastDeduperApp
 from .focused_recertification import recertify_added_or_changed_assets
+from .generation_builder import CertifiedGenerationBuilder
 from .progressive_group_indexer import run_progressive_group_index
 from .progressive_indexer import IndexingCancelled
 from .scanner import scan_assets
 from .survivor_orientation import partition_exact_duplicates
+from .survivor_policy import matcher_identity
 
 
 class SmartDeduperApp(FastDeduperApp):
@@ -21,10 +23,11 @@ class SmartDeduperApp(FastDeduperApp):
         self._inventory_verified_for_delete = False
         self._scan_completed_current_inventory = False
 
-        self.database.replace_pairs([], preserve_exclusions=True)
-        self._refresh_pairs()
+        # The active certified generation remains visible and immutable while
+        # a replacement is built privately. Busy-state gating disables review
+        # actions without clearing or progressively rewriting the saved queue.
         self._set_action_state()
-        self._set_review_state(False)
+        self._set_review_state(bool(self.pairs))
 
         def scan() -> str:
             self._ui(self.status.set, "Connecting to R2 and reading inventory…")
@@ -60,10 +63,9 @@ class SmartDeduperApp(FastDeduperApp):
                 assets,
                 self.config.survivor_policy,
             )
-            sha_target_count = self.database.replace_sha_deletions(sha_deletions)
+            sha_target_count = len(sha_deletions)
             certified_queue = CertifiedQueue()
-            self._active_certified_queue = certified_queue
-            self.database.set_matching_state("running")
+            certified_queue.admit_sha_deletions(sha_deletions)
             self._ui(
                 self._set_empty_pair_message,
                 "Indexing from Strict toward Loose…\n\n"
@@ -113,18 +115,6 @@ class SmartDeduperApp(FastDeduperApp):
             completed_bands = 0
             completed_groups = 0
 
-            def publish_queue(slider: int) -> int:
-                pairs = preview_projection(certified_queue)
-                target_count = self.database.replace_pairs(
-                    pairs,
-                    preserve_exclusions=True,
-                )
-                self._streaming_ready_slider = slider
-                self._streaming_ready_pairs = target_count
-                self._ui(self._refresh_pairs)
-                self._ui(lambda: self._refresh_index_boundary(apply=False))
-                return target_count
-
             def group_progress(band, result, seed_count: int) -> None:
                 nonlocal completed_groups
                 admission = admit_closed_frontier_group(
@@ -147,31 +137,27 @@ class SmartDeduperApp(FastDeduperApp):
                     return
                 if admission.admitted:
                     completed_groups += 1
-                target_count = publish_queue(band.loosest_slider)
+                staged_count = len(certified_queue.pairs())
                 self._ui(
                     self.status.set,
                     (
-                        f"CERTIFIED whole family {completed_groups}: "
+                        f"STAGED whole family {completed_groups}: "
                         f"{len(result.group.members)} members at slider {band.loosest_slider}; "
-                        f"{target_count} final review pairs available. Queue positions may re-sort "
-                        "by percentage; certified family relationships are frozen."
+                        f"{staged_count} replacement review pairs prepared privately. "
+                        "The active certified queue remains unchanged until atomic promotion."
                     ),
                 )
 
             def band_progress(result) -> None:
                 nonlocal completed_bands
                 completed_bands += 1
-                self._streaming_ready_slider = result.band.loosest_slider
-                self._streaming_ready_pairs = len(certified_queue.pairs())
-                self._ui(self._progressive_band_completed, result)
-                self._ui(lambda: self._refresh_index_boundary(apply=False))
                 self._ui(
                     self.status.set,
                     (
-                        f"CERTIFIED band {result.band.strictest_slider}–"
+                        f"STAGED band {result.band.strictest_slider}–"
                         f"{result.band.loosest_slider} complete: "
-                        f"{len(certified_queue.pairs())} preview pairs from immutable whole families. "
-                        "The slider can now use this completed band."
+                        f"{len(certified_queue.pairs())} replacement pairs prepared privately. "
+                        "Nothing has been published to review yet."
                     ),
                 )
 
@@ -202,8 +188,9 @@ class SmartDeduperApp(FastDeduperApp):
                 boundary_text = "none" if boundary is None else str(boundary)
                 return (
                     f"Indexing stopped safely after {completed_bands} completed bands and "
-                    f"{completed_groups} certified whole families; unlocked through slider "
-                    f"{boundary_text}. Unfinished families never entered preview; NUKE remains locked."
+                    f"{completed_groups} staged whole families; computed through slider "
+                    f"{boundary_text}. Staging was not promoted; the previous certified queue "
+                    "remains unchanged and NUKE remains locked."
                 )
 
             observed_edges = self.evidence.edge_count()
@@ -223,17 +210,51 @@ class SmartDeduperApp(FastDeduperApp):
                     f"evidence inventory: {len(delta.added)} added, "
                     f"{len(delta.changed)} changed, {len(delta.removed)} removed"
                 )
-            self.database.set_matching_state("complete")
+            promoted_pair_count = 0
             if errors == 0 and boundary == 0:
+                generations = self._generation_lifecycle.startup.store
+                builder = CertifiedGenerationBuilder(
+                    generations,
+                    inventory,
+                    int(round(self.slider.get())),
+                    lambda _inventory, _slider, _cancelled: certified_queue.payload(),
+                    matcher_version=matcher_identity(self.config.survivor_policy),
+                )
+                build_result = builder.build()
+                promoted_pair_count = self.database.replace_pairs(
+                    preview_projection(certified_queue),
+                    preserve_exclusions=True,
+                )
+                self.database.replace_sha_deletions(sha_deletions)
+                self.database.set_matching_state("complete")
+                self._active_certified_queue = certified_queue
+                self._generation_lifecycle.startup = type(
+                    self._generation_lifecycle.startup
+                )(
+                    store=generations,
+                    active_generation=build_result.generation,
+                    legacy_view_only_generation_id=(
+                        self._generation_lifecycle.startup.legacy_view_only_generation_id
+                    ),
+                )
                 self._scan_completed_current_inventory = True
-                safety_summary = "NUKE unlocked for this app session"
+                safety_summary = (
+                    f"atomically promoted {promoted_pair_count} certified review pairs; "
+                    "NUKE unlocked for this app session"
+                )
                 if repair_queue is not None:
                     for repair in pending_repairs:
                         repair_queue.complete(repair.repair_id)
             elif errors:
-                safety_summary = f"NUKE remains locked because {errors} hash errors remain"
+                safety_summary = (
+                    f"staging not promoted; previous certified queue retained; "
+                    f"NUKE remains locked because {errors} hash errors remain"
+                )
             else:
-                safety_summary = "NUKE remains locked because the full index is incomplete"
+                safety_summary = (
+                    "staging not promoted; previous certified queue retained; "
+                    "NUKE remains locked because the full index is incomplete"
+                )
             return (
                 f"Scan complete. {new_count} new, {changed_count} changed, "
                 f"{missing_count} missing, {errors} errors, "
@@ -242,4 +263,14 @@ class SmartDeduperApp(FastDeduperApp):
                 f"index unlocked through slider {boundary_text}; {cache_summary}; {safety_summary}."
             )
 
-        self._run("Starting smart incremental scan…", scan, self._scan_finished, lock_review=False)
+        self._run("Building replacement certified generation…", scan, self._scan_finished, lock_review=False)
+
+    def _scan_finished(self) -> None:
+        if self._scan_completed_current_inventory:
+            self._inventory_verified_for_delete = True
+        self._set_action_state()
+        self._set_review_state(bool(self.pairs))
+        # Do not call apply=True here: the mutable evidence cache is construction
+        # material, not authority for replacing the newly promoted generation.
+        self._refresh_index_boundary(apply=False)
+        self._refresh_pairs()

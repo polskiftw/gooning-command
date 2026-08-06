@@ -6,16 +6,15 @@ from tkinter import messagebox
 
 from deduper.app import DeduperApp
 from deduper.certified_app import CertifiedDeduperApp
+from deduper.certified_database import CertifiedDatabase
 from deduper.certified_slider import install_certified_slider_lock
 from deduper.config import ConfigError, app_directory, parse_config
-from deduper.database import Database
 from deduper.database_migration import migrate_and_recover
 from deduper.evidence_contract import enforce_evidence_contract
 from deduper.evidence_store import EvidenceStore
 from deduper.generation_app_lifecycle import attach_generation_lifecycle
 from deduper.generation_integration import initialize_generation_storage
 from deduper.r2 import R2Store
-from deduper.ready_lifecycle import install_ready_lifecycle
 from deduper.review_ui import install_review_ui_hardening
 
 
@@ -36,7 +35,7 @@ def main() -> int:
 
     install_review_ui_hardening(DeduperApp)
     install_certified_slider_lock(CertifiedDeduperApp)
-    database = Database(data_directory / "gparty-deduper.sqlite3")
+    database = CertifiedDatabase(data_directory / "gparty-deduper.sqlite3")
     try:
         migrate_and_recover(database)
         generation_startup = initialize_generation_storage(database)
@@ -51,7 +50,6 @@ def main() -> int:
         )
         root.destroy()
         return 3
-    install_ready_lifecycle(database)
     evidence = EvidenceStore(data_directory / "gparty-evidence.sqlite3")
     enforce_evidence_contract(evidence)
     store = R2Store(config)

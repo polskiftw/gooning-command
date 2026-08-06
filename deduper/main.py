@@ -5,7 +5,7 @@ import tkinter as tk
 from tkinter import messagebox
 
 from deduper.app import DeduperApp
-from deduper.bye_bitch import ByeBitchMixin
+from deduper.certified_app import CertifiedDeduperApp
 from deduper.certified_slider import install_certified_slider_lock
 from deduper.config import ConfigError, app_directory, parse_config
 from deduper.database import Database
@@ -17,11 +17,6 @@ from deduper.generation_integration import initialize_generation_storage
 from deduper.r2 import R2Store
 from deduper.ready_lifecycle import install_ready_lifecycle
 from deduper.review_ui import install_review_ui_hardening
-from deduper.smart_app import SmartDeduperApp
-
-
-class CertifiedDeduperApp(ByeBitchMixin, SmartDeduperApp):
-    """Production app with certified-family BYE BITCH behavior."""
 
 
 def main() -> int:

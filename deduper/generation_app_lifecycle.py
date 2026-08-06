@@ -134,6 +134,12 @@ class GenerationAppLifecycle:
         self.app._startup_inventory_snapshot = snapshot.inventory
         self.app._startup_generation_phase = snapshot.phase
 
+        if snapshot.rebuild_required:
+            # Validation already materialized the one authoritative startup
+            # inventory snapshot. Automatically build the replacement without
+            # requiring a manual button or performing a second R2 listing.
+            self.app.after(0, self.app.start_scan)
+
     def _refresh_controls(self) -> None:
         self.app._set_action_state()
         self.app._set_review_state(bool(self.app.pairs))

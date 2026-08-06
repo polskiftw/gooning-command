@@ -23,6 +23,10 @@ class CertifiedDeduperApp(SmartDeduperApp):
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
+        # Certified operation is automatic. The historical manual SCAN control
+        # must not be exposed because startup validation owns whether the saved
+        # queue is retained or a replacement generation is built.
+        self.scan_button.pack_forget()
         self._family_recertification_queue = FamilyRecertificationQueue(self.database)
         self.after(1000, self._resume_pending_family_recertifications)
         self._generation_lifecycle = GenerationAppLifecycle(

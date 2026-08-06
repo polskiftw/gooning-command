@@ -30,9 +30,16 @@ class SmartDeduperApp(FastDeduperApp):
         self._set_review_state(bool(self.pairs))
 
         def scan() -> str:
-            self._ui(self.status.set, "Connecting to R2 and reading inventory…")
-            self.store.verify()
-            inventory = self.store.list_assets()
+            startup_inventory = getattr(self, "_startup_inventory_snapshot", ())
+            startup_phase = getattr(self, "_startup_generation_phase", None)
+            if startup_inventory and getattr(startup_phase, "value", startup_phase) == "rebuild_required":
+                self._ui(self.status.set, "R2 changed — reconciling validated inventory snapshot…")
+                inventory = list(startup_inventory)
+                self._startup_inventory_snapshot = ()
+            else:
+                self._ui(self.status.set, "Connecting to R2 and reading inventory…")
+                self.store.verify()
+                inventory = self.store.list_assets()
             evidence_checkpoint = self.evidence.metadata_checkpoint()
             evidence_promoted = False
 

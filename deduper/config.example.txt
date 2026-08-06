@@ -12,6 +12,15 @@ INDEX_KEY=gallery-index.json
 # NUKE stays locked until this is YES.
 ALLOW_DELETE=NO
 
+# Default left-side survivor policy:
+# 1 = balanced quality (current behavior)
+# 2 = highest resolution
+# 3 = largest file size
+# 4 = longest duration
+# 5 = highest PDQ quality
+# Changing this keeps the old queue viewable but deletion-locked until recertified.
+SURVIVOR_POLICY=1
+
 # Samples still span the complete GIF/video. 120 is the speed/coverage sweet spot.
 VIDEO_SAMPLE_SECONDS=1
 MAX_VIDEO_FRAMES=120

@@ -18,9 +18,9 @@ class PendingFamilyRecertification:
 class FamilyRecertificationQueue:
     """Crash-safe priority queue for BYE BITCH family recertification.
 
-    The SQLite table names retain their historical ``family_repair_*`` spelling
-    solely for in-place database compatibility. They are private storage names,
-    not current product terminology.
+    The SQLite table and member-key names retain their historical
+    ``family_repair_*`` / ``repair_id`` spelling solely for in-place database
+    compatibility. They are private storage names, not current product terminology.
     """
 
     OPEN_STATUSES = ("pending", "running", "retry")
@@ -43,11 +43,11 @@ class FamilyRecertificationQueue:
                 );
 
                 CREATE TABLE IF NOT EXISTS family_repair_members (
-                    recertification_id INTEGER NOT NULL REFERENCES family_repair_jobs(id) ON DELETE CASCADE,
+                    repair_id INTEGER NOT NULL REFERENCES family_repair_jobs(id) ON DELETE CASCADE,
                     priority INTEGER NOT NULL,
                     asset_key TEXT NOT NULL,
-                    PRIMARY KEY (recertification_id, asset_key),
-                    UNIQUE (recertification_id, priority)
+                    PRIMARY KEY (repair_id, asset_key),
+                    UNIQUE (repair_id, priority)
                 );
 
                 CREATE INDEX IF NOT EXISTS family_recertification_status_idx
@@ -111,7 +111,7 @@ class FamilyRecertificationQueue:
             """
             SELECT asset_key
             FROM family_repair_members
-            WHERE recertification_id = ?
+            WHERE repair_id = ?
             ORDER BY priority
             """,
             (recertification_id,),
@@ -159,7 +159,7 @@ class FamilyRecertificationQueue:
             recertification_id = int(cursor.lastrowid)
             self.database.connection.executemany(
                 """
-                INSERT INTO family_repair_members (recertification_id, priority, asset_key)
+                INSERT INTO family_repair_members (repair_id, priority, asset_key)
                 VALUES (?, ?, ?)
                 """,
                 (
@@ -241,6 +241,6 @@ class FamilyRecertificationQueue:
                 SELECT 1 FROM family_repair_jobs
                 WHERE status IN ('pending', 'running', 'retry')
                 LIMIT 1
-                """
+                """,
             ).fetchone()
         return row is not None

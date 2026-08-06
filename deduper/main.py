@@ -6,7 +6,6 @@ from tkinter import messagebox
 
 from deduper.certified_app import CertifiedDeduperApp
 from deduper.certified_database import CertifiedDatabase
-from deduper.certified_slider import install_certified_slider_lock
 from deduper.config import ConfigError, app_directory, parse_config
 from deduper.database_migration import migrate_and_recover
 from deduper.evidence_contract import enforce_evidence_contract
@@ -31,7 +30,6 @@ def main() -> int:
         root.destroy()
         return 2
 
-    install_certified_slider_lock(CertifiedDeduperApp)
     database = CertifiedDatabase(data_directory / "gparty-deduper.sqlite3")
     try:
         migrate_and_recover(database)

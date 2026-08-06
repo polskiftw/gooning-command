@@ -138,7 +138,7 @@ class DeduperApp(tk.Tk):
             foreground=MUTED,
         ).pack(side="left", padx=(24, 4))
         self.slider = tk.IntVar(value=50)
-        ttk.Scale(
+        self.slider_widget = ttk.Scale(
             actions,
             from_=0,
             to=99,
@@ -146,7 +146,8 @@ class DeduperApp(tk.Tk):
             orient="horizontal",
             length=300,
             takefocus=False,
-        ).pack(side="left")
+        )
+        self.slider_widget.pack(side="left")
         tk.Label(
             actions,
             text="Strict",

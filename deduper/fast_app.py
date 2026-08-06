@@ -31,6 +31,7 @@ class FastDeduperApp(DeduperApp):
         self._show_current_pair()
         self._set_action_state()
         self._set_review_state(bool(self.pairs))
+        self._apply_certified_slider_lock()
         self.status.set(
             "Safety lock active: run SCAN before NUKE so the current R2 inventory is certified."
         )
@@ -40,6 +41,30 @@ class FastDeduperApp(DeduperApp):
         if not self._inventory_verified_for_delete:
             self.nuke_button.configure(state="disabled")
             self.sha_nuke_button.configure(state="disabled")
+        if hasattr(self, "slider_widget"):
+            self.after_idle(self._apply_certified_slider_lock)
+
+    def _apply_certified_slider_lock(self) -> None:
+        if not hasattr(self, "slider_widget"):
+            return
+        boundary = self.evidence.loosest_complete_slider()
+        busy = bool(self.busy or self.reverse_delete_busy)
+        self._slider_guard = True
+        try:
+            if boundary is None:
+                self.slider_widget.configure(from_=99, to=99, state="disabled")
+                self.slider.set(99)
+                return
+            boundary = max(0, min(99, int(boundary)))
+            requested = max(boundary, min(99, int(round(self.slider.get()))))
+            self.slider_widget.configure(
+                from_=boundary,
+                to=99,
+                state="disabled" if busy else "normal",
+            )
+            self.slider.set(requested)
+        finally:
+            self._slider_guard = False
 
     def _show_current_pair(self) -> None:
         super()._show_current_pair()
@@ -132,6 +157,17 @@ class FastDeduperApp(DeduperApp):
     def _slider_changed(self, *_args) -> None:
         if self._slider_guard:
             return
+        boundary = self.evidence.loosest_complete_slider()
+        requested = int(round(self.slider.get()))
+        if (
+            boundary is None
+            or self.busy
+            or self.reverse_delete_busy
+            or requested < int(boundary)
+            or requested > 99
+        ):
+            self._apply_certified_slider_lock()
+            return
         if self._slider_after_id is not None:
             self.after_cancel(self._slider_after_id)
         self._slider_after_id = self.after(180, self._apply_slider_view)
@@ -161,6 +197,7 @@ class FastDeduperApp(DeduperApp):
         self.comparison_progress.set(
             f"Permanent index READY: slider {boundary}–99  •  selected {requested}{safety}"
         )
+        self._apply_certified_slider_lock()
         if apply and not self.busy:
             self._apply_slider_view()
 
@@ -214,6 +251,7 @@ class FastDeduperApp(DeduperApp):
         )
 
     def start_scan(self) -> None:
+        self.slider_widget.configure(state="disabled")
         self.scan_cancel.clear()
         self._streaming_ready_slider = None
         self._streaming_ready_pairs = 0

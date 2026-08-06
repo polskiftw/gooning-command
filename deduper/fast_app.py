@@ -185,6 +185,7 @@ class FastDeduperApp(DeduperApp):
                 self.comparison_progress.set(
                     "Permanent index: no certified slider positions yet — press SCAN"
                 )
+            self._apply_certified_slider_lock()
             return
         if requested < boundary:
             self._slider_guard = True

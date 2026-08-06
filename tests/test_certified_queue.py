@@ -62,6 +62,14 @@ class CertifiedQueueTests(unittest.TestCase):
         self.assertEqual([row.deletion_key for row in payload.pairs], ["D", "B"])
         self.assertEqual(payload.sha_deletions, (ShaDeletionRow("A", "X"),))
 
+    def test_production_sha_tuple_is_normalized_for_generation_payload(self) -> None:
+        queue = CertifiedQueue()
+
+        added = queue.admit_sha_deletions((("A", "B"),))
+
+        self.assertEqual(added, 1)
+        self.assertEqual(queue.payload().sha_deletions, (ShaDeletionRow("A", "B"),))
+
     def test_sha_survivor_cannot_change_after_admission(self) -> None:
         queue = CertifiedQueue()
         queue.admit_sha_deletions((ShaDeletionRow("A", "B"),))

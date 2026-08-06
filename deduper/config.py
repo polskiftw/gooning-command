@@ -5,6 +5,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from .survivor_policy import SurvivorPolicy, parse_survivor_policy
+
 
 class ConfigError(ValueError):
     pass
@@ -24,6 +26,7 @@ class Config:
     scan_workers: int = 10
     video_workers: int = 3
     compare_workers: int = 20
+    survivor_policy: SurvivorPolicy = SurvivorPolicy.BALANCED
 
     @property
     def endpoint_url(self) -> str:
@@ -79,6 +82,11 @@ def parse_config(path: Path) -> Config:
             "and COMPARE_WORKERS must be numbers"
         ) from exc
 
+    try:
+        survivor_policy = parse_survivor_policy(values.get("SURVIVOR_POLICY", "1"))
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
+
     # 300 was the old shipped default. Treat that untouched legacy value as 120
     # so existing portable installs receive the faster setting automatically.
     if max_video_frames == 300:
@@ -108,4 +116,5 @@ def parse_config(path: Path) -> Config:
         scan_workers=scan_workers,
         video_workers=video_workers,
         compare_workers=compare_workers,
+        survivor_policy=survivor_policy,
     )

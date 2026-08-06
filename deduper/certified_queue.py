@@ -108,9 +108,24 @@ class CertifiedQueue:
             recertify_keys=recertify,
         )
 
-    def admit_sha_deletions(self, rows: Iterable[ShaDeletionRow]) -> int:
+    def admit_sha_deletions(
+        self,
+        rows: Iterable[ShaDeletionRow | tuple[str, str]],
+    ) -> int:
+        """Admit exact-duplicate deletions using one normalized typed contract.
+
+        The production exact-duplicate partitioner returns ``(survivor, deletion)``
+        tuples, while generation persistence uses ``ShaDeletionRow``. Normalize at
+        this ownership boundary so callers cannot accidentally populate the queue
+        with objects that later lack ``survivor_key`` or ``deletion_key``.
+        """
         added = 0
-        for row in rows:
+        for candidate in rows:
+            row = (
+                candidate
+                if isinstance(candidate, ShaDeletionRow)
+                else ShaDeletionRow(str(candidate[0]), str(candidate[1]))
+            )
             if row.survivor_key == row.deletion_key:
                 raise ValueError("SHA survivor and deletion key must differ")
             existing = self._sha_deletions.get(row.deletion_key)

@@ -1,0 +1,28 @@
+name: Fix Native Slider Empty Boundary Once
+
+on:
+  push:
+    branches:
+      - deduper-cache-foundation
+    paths:
+      - "tools/fix_native_slider_empty_boundary_once.py"
+      - ".github/workflows/fix-native-slider-empty-boundary-once.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: python tools/fix_native_slider_empty_boundary_once.py
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/fix-native-slider-empty-boundary-once.yml tools/fix_native_slider_empty_boundary_once.py
+          git add deduper/fast_app.py
+          git commit -m "Keep uncertified slider pinned"
+          git push origin HEAD:deduper-cache-foundation

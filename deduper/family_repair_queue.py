@@ -41,6 +41,49 @@ class FamilyRepairQueue:
                     ON family_repair_jobs(status, id);
                 """
             )
+            # A process that died while repairing leaves a running lease behind.
+            # On startup it becomes pending again and may be claimed exactly once.
+            self.database.connection.execute(
+                """
+                UPDATE family_repair_jobs
+                SET status = 'pending'
+                WHERE status = 'running'
+                """
+            )
+            # Collapse any duplicates created by older builds before enforcing the
+            # one-unfinished-job rule at the database layer.
+            self.database.connection.execute(
+                """
+                UPDATE family_repair_jobs
+                SET status = 'complete', completed_at = CURRENT_TIMESTAMP
+                WHERE status IN ('pending', 'running')
+                  AND id NOT IN (
+                      SELECT MIN(id)
+                      FROM family_repair_jobs
+                      WHERE status IN ('pending', 'running')
+                      GROUP BY deleted_key
+                  )
+                """
+            )
+            self.database.connection.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS family_repair_one_open_deleted_idx
+                ON family_repair_jobs(deleted_key)
+                WHERE status IN ('pending', 'running')
+                """
+            )
+
+    def _priority_keys(self, repair_id: int) -> tuple[str, ...]:
+        rows = self.database.connection.execute(
+            """
+            SELECT asset_key
+            FROM family_repair_members
+            WHERE repair_id = ?
+            ORDER BY priority
+            """,
+            (repair_id,),
+        ).fetchall()
+        return tuple(str(row["asset_key"]) for row in rows)
 
     def enqueue(
         self,
@@ -57,6 +100,22 @@ class FamilyRepairQueue:
             raise ValueError("deleted key cannot be queued for family repair")
 
         with self.database._lock, self.database.connection:
+            existing = self.database.connection.execute(
+                """
+                SELECT id, protected_key
+                FROM family_repair_jobs
+                WHERE deleted_key = ? AND status IN ('pending', 'running')
+                """,
+                (deleted_key,),
+            ).fetchone()
+            if existing is not None:
+                repair_id = int(existing["id"])
+                if str(existing["protected_key"]) != protected_key:
+                    raise ValueError("unfinished family repair has a different protected partner")
+                if self._priority_keys(repair_id) != ordered:
+                    raise ValueError("unfinished family repair has a different priority order")
+                return repair_id
+
             cursor = self.database.connection.execute(
                 """
                 INSERT INTO family_repair_jobs (deleted_key, protected_key, status)
@@ -89,36 +148,37 @@ class FamilyRepairQueue:
             ).fetchall()
             results = []
             for job in jobs:
-                members = self.database.connection.execute(
-                    """
-                    SELECT asset_key
-                    FROM family_repair_members
-                    WHERE repair_id = ?
-                    ORDER BY priority
-                    """,
-                    (job["id"],),
-                ).fetchall()
                 results.append(
                     PendingFamilyRepair(
                         repair_id=int(job["id"]),
                         deleted_key=str(job["deleted_key"]),
                         protected_key=str(job["protected_key"]),
-                        priority_keys=tuple(str(row["asset_key"]) for row in members),
+                        priority_keys=self._priority_keys(int(job["id"])),
                     )
                 )
         return tuple(results)
 
-    def mark_running(self, repair_id: int) -> None:
+    def mark_running(self, repair_id: int) -> bool:
+        """Atomically claim a pending repair; only one caller can succeed."""
         with self.database._lock, self.database.connection:
-            self.database.connection.execute(
-                "UPDATE family_repair_jobs SET status = 'running' WHERE id = ?",
+            cursor = self.database.connection.execute(
+                """
+                UPDATE family_repair_jobs
+                SET status = 'running'
+                WHERE id = ? AND status = 'pending'
+                """,
                 (repair_id,),
             )
+        return cursor.rowcount == 1
 
     def mark_pending(self, repair_id: int) -> None:
         with self.database._lock, self.database.connection:
             self.database.connection.execute(
-                "UPDATE family_repair_jobs SET status = 'pending' WHERE id = ?",
+                """
+                UPDATE family_repair_jobs
+                SET status = 'pending'
+                WHERE id = ? AND status = 'running'
+                """,
                 (repair_id,),
             )
 

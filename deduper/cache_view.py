@@ -5,8 +5,9 @@ from collections.abc import Iterable
 from .evidence_qualification import qualified_edge_rows
 from .evidence_store import EvidenceStore
 from .group_closure import ready_group_members
-from .matcher import _orient_duplicate_groups
 from .models import Asset
+from .survivor_orientation import orient_duplicate_groups
+from .survivor_policy import SurvivorPolicy
 
 
 def _edge_score_and_reason(row) -> tuple[float, str]:
@@ -41,6 +42,7 @@ def _pairs_from_qualified_edges(
     slider: int,
     *,
     allowed_keys: set[str] | None = None,
+    survivor_policy: SurvivorPolicy = SurvivorPolicy.BALANCED,
 ) -> list[tuple[str, str, float, str]]:
     materialized = list(assets)
     live_keys = {asset.key for asset in materialized if not asset.deleted}
@@ -57,13 +59,15 @@ def _pairs_from_qualified_edges(
         candidates[(left, right)] = (score, reason)
 
     eligible_assets = [asset for asset in materialized if asset.key in live_keys]
-    return _orient_duplicate_groups(eligible_assets, candidates)
+    return orient_duplicate_groups(eligible_assets, candidates, survivor_policy)
 
 
 def ready_pairs_for_slider(
     evidence: EvidenceStore,
     assets: Iterable[Asset],
     slider: int,
+    *,
+    survivor_policy: SurvivorPolicy = SurvivorPolicy.BALANCED,
 ) -> list[tuple[str, str, float, str]]:
     """Build review pairs only from individually certified READY groups.
 
@@ -80,6 +84,7 @@ def ready_pairs_for_slider(
         assets,
         value,
         allowed_keys=members,
+        survivor_policy=survivor_policy,
     )
 
 
@@ -87,6 +92,8 @@ def cached_pairs_for_slider(
     evidence: EvidenceStore,
     assets: Iterable[Asset],
     slider: int,
+    *,
+    survivor_policy: SurvivorPolicy = SurvivorPolicy.BALANCED,
 ) -> list[tuple[str, str, float, str]]:
     """Build stable oriented review pairs from the complete cached range.
 
@@ -102,4 +109,9 @@ def cached_pairs_for_slider(
             f"slider {value} is not certified; loosest available position is {boundary}"
         )
 
-    return _pairs_from_qualified_edges(evidence, assets, value)
+    return _pairs_from_qualified_edges(
+        evidence,
+        assets,
+        value,
+        survivor_policy=survivor_policy,
+    )

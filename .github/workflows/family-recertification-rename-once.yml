@@ -1,0 +1,28 @@
+name: Family Recertification Rename Once
+
+on:
+  push:
+    branches:
+      - deduper-cache-foundation
+    paths:
+      - "tools/family_recertification_rename_once.py"
+      - ".github/workflows/family-recertification-rename-once.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  rename:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: python tools/family_recertification_rename_once.py
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/family-recertification-rename-once.yml tools/family_recertification_rename_once.py
+          git add deduper tests
+          git commit -m "Rename family repair to family recertification"
+          git push origin HEAD:deduper-cache-foundation

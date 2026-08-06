@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -36,10 +35,13 @@ class FamilyRepairQueueTests(unittest.TestCase):
         temporary, database = self.make_database()
         queue = FamilyRepairQueue(database)
         repair_id = queue.enqueue("A", "1", ("1", "2"))
-        queue.mark_running(repair_id)
+        self.assertTrue(queue.mark_running(repair_id))
 
-        restored = queue.pending()
+        # Constructing the queue represents an app restart and releases the stale lease.
+        restored_queue = FamilyRepairQueue(database)
+        restored = restored_queue.pending()
         self.assertEqual([job.repair_id for job in restored], [repair_id])
+        self.assertTrue(restored_queue.mark_running(repair_id))
         database.close()
         temporary.cleanup()
 
@@ -67,6 +69,51 @@ class FamilyRepairQueueTests(unittest.TestCase):
         queue = FamilyRepairQueue(database)
         with self.assertRaises(ValueError):
             queue.enqueue("A", "1", ("1", "A"))
+        database.close()
+        temporary.cleanup()
+
+    def test_identical_reenqueue_returns_existing_unfinished_job(self):
+        temporary, database = self.make_database()
+        queue = FamilyRepairQueue(database)
+        first = queue.enqueue("A", "1", ("1", "2"))
+        second = queue.enqueue("A", "1", ("1", "2"))
+
+        self.assertEqual(second, first)
+        self.assertEqual(len(queue.pending()), 1)
+        database.close()
+        temporary.cleanup()
+
+    def test_conflicting_reenqueue_is_rejected(self):
+        temporary, database = self.make_database()
+        queue = FamilyRepairQueue(database)
+        queue.enqueue("A", "1", ("1", "2"))
+
+        with self.assertRaises(ValueError):
+            queue.enqueue("A", "2", ("2", "1"))
+        with self.assertRaises(ValueError):
+            queue.enqueue("A", "1", ("1", "3"))
+        database.close()
+        temporary.cleanup()
+
+    def test_only_one_worker_can_claim_pending_repair(self):
+        temporary, database = self.make_database()
+        queue = FamilyRepairQueue(database)
+        repair_id = queue.enqueue("A", "1", ("1", "2"))
+
+        self.assertTrue(queue.mark_running(repair_id))
+        self.assertFalse(queue.mark_running(repair_id))
+        database.close()
+        temporary.cleanup()
+
+    def test_completed_job_allows_a_new_future_job_for_same_deleted_key(self):
+        temporary, database = self.make_database()
+        queue = FamilyRepairQueue(database)
+        first = queue.enqueue("A", "1", ("1", "2"))
+        queue.complete(first)
+        second = queue.enqueue("A", "1", ("1", "2"))
+
+        self.assertNotEqual(second, first)
+        self.assertEqual([job.repair_id for job in queue.pending()], [second])
         database.close()
         temporary.cleanup()
 

@@ -76,10 +76,10 @@ class DeduperApp(tk.Tk):
             self.empty_pair_message = "No duplicates found.\n\nThe last comparison completed successfully."
         elif state in {"running", "exact", "phash", "pdq", "images", "failed", "cancelled"}:
             self.empty_pair_message = (
-                "Comparison did not finish.\n\nSaved results are safe; press SCAN to try again."
+                "Comparison did not finish.\n\nSaved results are safe; automatic certification will retry on startup."
             )
         else:
-            self.empty_pair_message = "Not compared yet.\n\nPress SCAN to find duplicate pairs."
+            self.empty_pair_message = "No certified queue exists yet.\n\nAutomatic certification begins on startup."
 
         self.title("GParty Deduper")
         self.geometry("1320x880")
@@ -309,7 +309,7 @@ class DeduperApp(tk.Tk):
 
     def _set_action_state(self) -> None:
         state = "disabled" if self.busy or self.reverse_delete_busy else "normal"
-        for button in (self.scan_button, self.nuke_button, self.sha_nuke_button):
+        for button in (self.nuke_button, self.sha_nuke_button):
             button.configure(state=state)
 
     def _run(

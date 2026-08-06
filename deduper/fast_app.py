@@ -33,7 +33,7 @@ class FastDeduperApp(DeduperApp):
         self._set_review_state(bool(self.pairs))
         self._apply_certified_slider_lock()
         self.status.set(
-            "Safety lock active: run SCAN before NUKE so the current R2 inventory is certified."
+            "Safety lock active while automatic startup certification validates the current R2 inventory."
         )
 
     def _set_action_state(self) -> None:
@@ -108,8 +108,8 @@ class FastDeduperApp(DeduperApp):
     def _start_nuke(self, *, sha_only: bool) -> None:
         if not self._inventory_verified_for_delete:
             self.status.set(
-                "NUKE is safety-locked. Run a complete, error-free SCAN to certify "
-                "the current R2 inventory first."
+                "NUKE is safety-locked until automatic startup certification validates "
+                "the current R2 inventory."
             )
             return
         super()._start_nuke(sha_only=sha_only)
@@ -183,7 +183,7 @@ class FastDeduperApp(DeduperApp):
                 )
             else:
                 self.comparison_progress.set(
-                    "Permanent index: no certified slider positions yet — press SCAN"
+                    "Permanent index: automatic startup certification is still building the first slider position"
                 )
             self._apply_certified_slider_lock()
             return
@@ -214,7 +214,7 @@ class FastDeduperApp(DeduperApp):
                     "the slider unlocks after a complete band finishes."
                 )
             else:
-                self.status.set("No certified slider positions yet. Press SCAN to begin indexing.")
+                self.status.set("No certified slider positions yet. Automatic startup certification is still indexing.")
             return
 
         requested = int(round(self.slider.get()))

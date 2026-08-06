@@ -11,6 +11,7 @@ from deduper.database import Database
 from deduper.database_migration import migrate_and_recover
 from deduper.evidence_contract import enforce_evidence_contract
 from deduper.evidence_store import EvidenceStore
+from deduper.generation_app_lifecycle import attach_generation_lifecycle
 from deduper.generation_integration import initialize_generation_storage
 from deduper.r2 import R2Store
 from deduper.ready_lifecycle import install_ready_lifecycle
@@ -55,7 +56,7 @@ def main() -> int:
     enforce_evidence_contract(evidence)
     store = R2Store(config)
     app = SmartDeduperApp(config, database, store, data_directory, evidence=evidence)
-    app.generation_startup = generation_startup
+    attach_generation_lifecycle(app, generation_startup)
     app.mainloop()
     return 0
 

@@ -4,6 +4,7 @@ import unittest
 
 class AutomaticCertifiedStartupTests(unittest.TestCase):
     def test_manual_scan_button_is_hidden(self) -> None:
+        # The obsolete manual control must not be constructed or hidden later.
         base_source = Path("deduper/app.py").read_text()
         certified_source = Path("deduper/certified_app.py").read_text()
         self.assertNotIn('text="SCAN"', base_source)

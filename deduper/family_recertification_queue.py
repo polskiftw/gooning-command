@@ -39,7 +39,50 @@ class FamilyRecertificationQueue:
         ).fetchone()
         return row is not None
 
+    def _repair_malformed_current_schema(self) -> None:
+        if not self._table_exists("family_recertification_jobs"):
+            return
+        columns = {
+            str(row["name"])
+            for row in self.database.connection.execute(
+                "PRAGMA table_info(family_recertification_jobs)"
+            ).fetchall()
+        }
+        required_identity = {"id", "deleted_key", "protected_key"}
+        if required_identity.issubset(columns):
+            return
+
+        row_count = int(
+            self.database.connection.execute(
+                "SELECT COUNT(*) AS count FROM family_recertification_jobs"
+            ).fetchone()["count"]
+        )
+        member_count = 0
+        if self._table_exists("family_recertification_members"):
+            member_count = int(
+                self.database.connection.execute(
+                    "SELECT COUNT(*) AS count FROM family_recertification_members"
+                ).fetchone()["count"]
+            )
+        if row_count or member_count:
+            missing = ", ".join(sorted(required_identity - columns))
+            present = ", ".join(sorted(columns)) or "none"
+            raise RuntimeError(
+                "Malformed prerelease family recertification schema contains data; "
+                f"cannot safely infer missing columns ({missing}). Present columns: {present}"
+            )
+
+        # Empty prerelease tables carry no recertification work. Rebuild them
+        # atomically instead of trying to ALTER an incompatible table shape.
+        self.database.connection.execute(
+            "DROP TABLE IF EXISTS family_recertification_members"
+        )
+        self.database.connection.execute(
+            "DROP TABLE family_recertification_jobs"
+        )
+
     def _create_current_schema(self) -> None:
+        self._repair_malformed_current_schema()
         # Create only the base tables first. Existing prerelease databases may
         # already contain a partial version of the modern table, and SQLite's
         # CREATE TABLE IF NOT EXISTS will not add its missing columns. Indexes

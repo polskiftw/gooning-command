@@ -101,6 +101,50 @@ class FamilyRecertificationSchemaMigrationTests(unittest.TestCase):
             self.assertIn('family_recertification_status_idx', indexes)
             db.close()
 
+    def test_empty_malformed_modern_tables_are_rebuilt_canonically(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db = CertifiedDatabase(Path(directory) / "deduper.sqlite3")
+            with db.connection:
+                db.connection.executescript("""
+                    CREATE TABLE family_recertification_jobs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT
+                    );
+                    CREATE TABLE family_recertification_members (
+                        recertification_id INTEGER, asset_key TEXT
+                    );
+                """)
+            FamilyRecertificationQueue(db)
+            columns = {row['name'] for row in db.connection.execute(
+                "PRAGMA table_info(family_recertification_jobs)"
+            )}
+            self.assertTrue({'id', 'deleted_key', 'protected_key', 'status'} <= columns)
+            member_columns = {row['name'] for row in db.connection.execute(
+                "PRAGMA table_info(family_recertification_members)"
+            )}
+            self.assertEqual(
+                member_columns,
+                {'recertification_id', 'priority', 'asset_key'},
+            )
+            db.close()
+
+    def test_nonempty_malformed_modern_table_fails_without_dropping_data(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db = CertifiedDatabase(Path(directory) / "deduper.sqlite3")
+            with db.connection:
+                db.connection.executescript("""
+                    CREATE TABLE family_recertification_jobs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT
+                    );
+                    INSERT INTO family_recertification_jobs DEFAULT VALUES;
+                """)
+            with self.assertRaisesRegex(RuntimeError, 'contains data'):
+                FamilyRecertificationQueue(db)
+            count = db.connection.execute(
+                "SELECT COUNT(*) AS count FROM family_recertification_jobs"
+            ).fetchone()['count']
+            self.assertEqual(count, 1)
+            db.close()
+
 
 if __name__ == '__main__':
     unittest.main()

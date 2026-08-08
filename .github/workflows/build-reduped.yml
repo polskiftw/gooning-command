@@ -1,0 +1,82 @@
+name: Build Reduped
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/reduped-v1
+    paths:
+      - "reduped/**"
+      - ".github/workflows/build-reduped.yml"
+  pull_request:
+    paths:
+      - "reduped/**"
+      - ".github/workflows/build-reduped.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reduped-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install native dependencies
+        shell: pwsh
+        run: |
+          & "$env:VCPKG_INSTALLATION_ROOT/vcpkg.exe" install --triplet x64-windows-static --x-manifest-root=reduped
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S reduped -B reduped/build `
+            -A x64 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DBUILD_TESTING=ON `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+
+      - name: Build
+        run: cmake --build reduped/build --config Release --parallel
+
+      - name: Run behavioral tests
+        run: ctest --test-dir reduped/build -C Release --output-on-failure
+
+      - name: Verify package inputs
+        shell: pwsh
+        run: |
+          $required = @(
+            "reduped/build/bin/Release/Reduped.exe",
+            "reduped/config.example.txt",
+            "reduped/README.md",
+            "reduped/DGD.md"
+          )
+          foreach ($path in $required) {
+            if (!(Test-Path $path)) { throw "Missing required package file: $path" }
+          }
+
+      - name: Assemble portable package
+        shell: pwsh
+        run: |
+          $package = "reduped/build/package/Reduped-Windows"
+          New-Item -ItemType Directory -Force -Path $package | Out-Null
+          Copy-Item "reduped/build/bin/Release/Reduped.exe" $package
+          Copy-Item "reduped/config.example.txt" $package
+          Copy-Item "reduped/README.md" $package
+          Copy-Item "reduped/DGD.md" $package
+          Compress-Archive -Path "$package/*" -DestinationPath "reduped/build/Reduped-Windows.zip"
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Reduped-Windows
+          path: reduped/build/Reduped-Windows.zip
+          if-no-files-found: error
+          retention-days: 30

@@ -65,7 +65,10 @@ private:
  LRESULT callback_failure(UINT message,std::string_view error)noexcept{
   validated_=false;validation_failed_=true;busy_.store(false);cancelled_.store(true);
   for(HWND item:{previous_,next_,exclude_,nuke_,nuke_sha_,left_link_,right_link_,left_delete_,right_delete_,slider_})if(item)EnableWindow(item,FALSE);
-  if(status_){const auto text=wide(std::string("Reduped entered a safe error state: ")+std::string(error));SetWindowTextW(status_,text.c_str());}
+  if(status_){
+   try{const auto text=wide(std::string("Reduped entered a safe error state: ")+std::string(error));SetWindowTextW(status_,text.c_str());}
+   catch(...){SetWindowTextW(status_,L"Reduped entered a safe error state.");}
+  }
   if(message==WM_CLOSE){try{shutdown_workers();}catch(...){}if(window_)DestroyWindow(window_);}
   return 0;
  }

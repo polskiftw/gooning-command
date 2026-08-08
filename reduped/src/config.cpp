@@ -99,9 +99,9 @@ void Config::validate() const {
     if (video_sample_seconds <= 0 || max_video_frames < 1) {
         throw std::runtime_error("Video sampling values must be positive");
     }
-    if (preview_cache_mb < 64 || hash_workers < 1 || compare_workers < 1 ||
+    if ((preview_cache_mb != 0 && preview_cache_mb < 64) || hash_workers < 1 || compare_workers < 1 ||
         hash_workers > max_worker_count || compare_workers > max_worker_count) {
-        throw std::runtime_error("Cache and worker values are outside the supported range");
+        throw std::runtime_error("PREVIEW_CACHE_MB must be 0 or at least 64; worker values are outside the supported range");
     }
 }
 

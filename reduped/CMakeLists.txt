@@ -79,6 +79,11 @@ if(BUILD_TESTING)
     target_link_libraries(reduped_session_tests PRIVATE reduped_core)
     add_test(NAME reduped_session_exclusions COMMAND reduped_session_tests)
 
+    add_executable(reduped_algorithm_tests tests/test_algorithms.cpp)
+    target_include_directories(reduped_algorithm_tests PRIVATE include)
+    target_link_libraries(reduped_algorithm_tests PRIVATE reduped_core)
+    add_test(NAME reduped_algorithms COMMAND reduped_algorithm_tests)
+
     add_executable(reduped_benchmark tests/benchmark_matcher.cpp)
     target_include_directories(reduped_benchmark PRIVATE include)
     target_link_libraries(reduped_benchmark PRIVATE reduped_core)

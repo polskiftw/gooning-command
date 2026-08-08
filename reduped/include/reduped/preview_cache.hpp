@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -37,10 +38,9 @@ public:
         const auto path = cache_path(object);
         {
             std::lock_guard lock(mutex_);
-            auto cached = read_valid_locked(path, object.size);
-            if (!cached.empty() || object.size == 0) {
+            if (auto cached = read_valid_locked(path, object.size)) {
                 touch_locked(path);
-                return cached;
+                return std::move(*cached);
             }
         }
 
@@ -81,26 +81,26 @@ private:
         return directory_ / (sha256_hex(identity) + ".bin");
     }
 
-    std::vector<std::uint8_t> read_valid_locked(const std::filesystem::path& path,
-                                                 std::uint64_t expected_size) {
+    std::optional<std::vector<std::uint8_t>> read_valid_locked(const std::filesystem::path& path,
+                                                                std::uint64_t expected_size) {
         std::error_code error;
-        if (!std::filesystem::is_regular_file(path, error) || error) return {};
+        if (!std::filesystem::is_regular_file(path, error) || error) return std::nullopt;
         const auto size = std::filesystem::file_size(path, error);
         if (error || size != expected_size) {
             std::filesystem::remove(path, error);
-            return {};
+            return std::nullopt;
         }
 
         std::ifstream input(path, std::ios::binary);
         if (!input) {
             std::filesystem::remove(path, error);
-            return {};
+            return std::nullopt;
         }
         std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
         if (size != 0) input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(size));
         if (!input) {
             std::filesystem::remove(path, error);
-            return {};
+            return std::nullopt;
         }
         return bytes;
     }

@@ -13,8 +13,8 @@ namespace reduped {
 enum class StartupOutcome { validated_existing, certified_new, validation_failed, cancelled };
 
 struct PipelineVersions {
-    std::string hash{"native-evidence-v1"};
-    std::string matcher{"native-exhaustive-v1"};
+    std::string hash{"native-phash-pdq-crop-vpdq-v2"};
+    std::string matcher{"native-four-stage-v2"};
     std::string workflow{"certified-families-v1"};
 };
 

@@ -19,6 +19,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace reduped {
 namespace {
@@ -28,6 +29,8 @@ struct Handle {
     Handle()=default;explicit Handle(HINTERNET h):value(h){}
     ~Handle(){if(value)WinHttpCloseHandle(value);}
     Handle(const Handle&)=delete;Handle& operator=(const Handle&)=delete;
+    Handle(Handle&& other)noexcept:value(std::exchange(other.value,nullptr)){}
+    Handle& operator=(Handle&& other)noexcept{if(this!=&other){if(value)WinHttpCloseHandle(value);value=std::exchange(other.value,nullptr);}return *this;}
 };
 
 std::wstring wide(std::string_view text){if(text.empty())return {};const int size=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,text.data(),static_cast<int>(text.size()),nullptr,0);if(size<=0)throw std::runtime_error("Invalid UTF-8 in service configuration");std::wstring out(static_cast<std::size_t>(size),L'\0');MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,text.data(),static_cast<int>(text.size()),out.data(),size);return out;}

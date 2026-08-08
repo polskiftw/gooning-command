@@ -19,6 +19,7 @@ add_library(reduped_core STATIC
     src/generation.cpp
     src/deletion.cpp
     src/pipeline.cpp
+    src/session.cpp
 )
 target_include_directories(reduped_core PUBLIC include)
 target_link_libraries(reduped_core PUBLIC SQLite::SQLite3)
@@ -70,6 +71,11 @@ if(BUILD_TESTING)
     target_include_directories(reduped_tests PRIVATE include tests)
     target_link_libraries(reduped_tests PRIVATE reduped_core)
     add_test(NAME reduped_behavior COMMAND reduped_tests)
+
+    add_executable(reduped_session_tests tests/test_session.cpp)
+    target_include_directories(reduped_session_tests PRIVATE include)
+    target_link_libraries(reduped_session_tests PRIVATE reduped_core)
+    add_test(NAME reduped_session_exclusions COMMAND reduped_session_tests)
 
     add_executable(reduped_benchmark tests/benchmark_matcher.cpp)
     target_include_directories(reduped_benchmark PRIVATE include)

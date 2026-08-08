@@ -10,6 +10,8 @@
 namespace reduped {
 namespace {
 
+constexpr int max_worker_count = 256;
+
 std::string trim(std::string value) {
     auto not_space = [](unsigned char c) { return !std::isspace(c); };
     value.erase(value.begin(), std::find_if(value.begin(), value.end(), not_space));
@@ -27,6 +29,16 @@ int integer(const std::unordered_map<std::string, std::string>& values,
             const std::string& key, int fallback) {
     const auto it = values.find(key);
     return it == values.end() || it->second.empty() ? fallback : std::stoi(it->second);
+}
+
+unsigned worker_count(const std::unordered_map<std::string, std::string>& values,
+                      const std::string& key, int fallback, bool allow_auto = false) {
+    const int parsed = integer(values, key, fallback);
+    if (parsed < 0 || (!allow_auto && parsed == 0) || parsed > max_worker_count) {
+        const std::string range = allow_auto ? "0 to " : "1 to ";
+        throw std::runtime_error(key + " must be between " + range + std::to_string(max_worker_count));
+    }
+    return static_cast<unsigned>(parsed);
 }
 
 } // namespace
@@ -63,8 +75,8 @@ Config Config::load(const std::filesystem::path& path) {
         ? 1.0 : std::stod(values["VIDEO_SAMPLE_SECONDS"]);
     config.max_video_frames = integer(values, "MAX_VIDEO_FRAMES", 300);
     config.preview_cache_mb = integer(values, "PREVIEW_CACHE_MB", 5000);
-    config.hash_workers = static_cast<unsigned>(integer(values, "HASH_WORKERS", 8));
-    config.compare_workers = static_cast<unsigned>(integer(values, "COMPARE_WORKERS", 0));
+    config.hash_workers = worker_count(values, "HASH_WORKERS", 8);
+    config.compare_workers = worker_count(values, "COMPARE_WORKERS", 0, true);
     const auto policy = lower(values["SURVIVOR_POLICY"]);
     if (policy.empty() || policy == "resolution") config.survivor_policy = SurvivorPolicy::resolution;
     else if (policy == "file_size") config.survivor_policy = SurvivorPolicy::file_size;
@@ -73,6 +85,7 @@ Config Config::load(const std::filesystem::path& path) {
     else throw std::runtime_error("SURVIVOR_POLICY must be resolution, file_size, oldest, or newest");
     if (config.compare_workers == 0) {
         config.compare_workers = std::max(1u, std::thread::hardware_concurrency());
+        config.compare_workers = std::min(config.compare_workers, static_cast<unsigned>(max_worker_count));
     }
     config.validate();
     return config;
@@ -86,8 +99,9 @@ void Config::validate() const {
     if (video_sample_seconds <= 0 || max_video_frames < 1) {
         throw std::runtime_error("Video sampling values must be positive");
     }
-    if (preview_cache_mb < 64 || hash_workers < 1 || compare_workers < 1) {
-        throw std::runtime_error("Cache and worker values must be positive");
+    if (preview_cache_mb < 64 || hash_workers < 1 || compare_workers < 1 ||
+        hash_workers > max_worker_count || compare_workers > max_worker_count) {
+        throw std::runtime_error("Cache and worker values are outside the supported range");
     }
 }
 

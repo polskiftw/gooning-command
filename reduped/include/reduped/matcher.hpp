@@ -11,10 +11,11 @@ namespace reduped {
 struct MatchPolicy {
     unsigned phash_radius{};
     unsigned pdq_radius{};
-    unsigned crop_radius{};
+    double crop_radius{};
+    double required_crop_fraction{};
     unsigned video_radius{};
     double required_video_fraction{};
-    int minimum_pdq_quality{};
+    double minimum_similarity{};
 };
 
 MatchPolicy policy_for_slider(int slider);

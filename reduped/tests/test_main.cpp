@@ -92,7 +92,7 @@ void exact_nuke_uses_certified_set_only(){Fixture f;auto objects=std::vector{obj
 
 void preview_revision_rejects_late_result(){require(!preview_result_is_current(1,"old",2,"new"),"late preview revision was accepted");require(!preview_result_is_current(2,"old",2,"new"),"wrong preview key was accepted");require(preview_result_is_current(2,"new",2,"new"),"current preview was rejected");}
 
-void matcher_policy_has_about_one_hundred_distinct_steps(){auto strict=policy_for_slider(0),loose=policy_for_slider(99);require(strict.phash_radius<loose.phash_radius&&strict.pdq_radius<loose.pdq_radius,"slider does not change consistent policy");}
+void matcher_policy_has_about_one_hundred_distinct_steps(){auto loose=policy_for_slider(0),strict=policy_for_slider(99);require(strict.phash_radius<loose.phash_radius&&strict.pdq_radius<loose.pdq_radius&&strict.crop_radius<loose.crop_radius&&strict.video_radius<loose.video_radius&&strict.required_video_fraction>loose.required_video_fraction,"higher slider values must consistently tighten matching policy");}
 
 } // namespace
 

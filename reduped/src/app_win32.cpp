@@ -53,7 +53,22 @@ public:
   MSG message{};while(GetMessageW(&message,nullptr,0,0)>0){TranslateMessage(&message);DispatchMessageW(&message);}return static_cast<int>(message.wParam);
  }
 private:
- static LRESULT CALLBACK window_proc(HWND window,UINT message,WPARAM wp,LPARAM lp){App* self=reinterpret_cast<App*>(GetWindowLongPtrW(window,GWLP_USERDATA));if(message==WM_NCCREATE){self=static_cast<App*>(reinterpret_cast<CREATESTRUCTW*>(lp)->lpCreateParams);self->window_=window;SetWindowLongPtrW(window,GWLP_USERDATA,reinterpret_cast<LONG_PTR>(self));}return self?self->handle(message,wp,lp):DefWindowProcW(window,message,wp,lp);}
+ static LRESULT CALLBACK window_proc(HWND window,UINT message,WPARAM wp,LPARAM lp){
+  App* self=reinterpret_cast<App*>(GetWindowLongPtrW(window,GWLP_USERDATA));
+  try{
+   if(message==WM_NCCREATE){self=static_cast<App*>(reinterpret_cast<CREATESTRUCTW*>(lp)->lpCreateParams);self->window_=window;SetWindowLongPtrW(window,GWLP_USERDATA,reinterpret_cast<LONG_PTR>(self));}
+   return self?self->handle(message,wp,lp):DefWindowProcW(window,message,wp,lp);
+  }catch(const std::exception& e){return self?self->callback_failure(message,e.what()):DefWindowProcW(window,message,wp,lp);}
+   catch(...){return self?self->callback_failure(message,"Unexpected internal UI failure"):DefWindowProcW(window,message,wp,lp);}
+ }
+
+ LRESULT callback_failure(UINT message,std::string_view error)noexcept{
+  validated_=false;validation_failed_=true;busy_.store(false);cancelled_.store(true);
+  for(HWND item:{previous_,next_,exclude_,nuke_,nuke_sha_,left_link_,right_link_,left_delete_,right_delete_,slider_})if(item)EnableWindow(item,FALSE);
+  if(status_){const auto text=wide(std::string("Reduped entered a safe error state: ")+std::string(error));SetWindowTextW(status_,text.c_str());}
+  if(message==WM_CLOSE){try{shutdown_workers();}catch(...){}if(window_)DestroyWindow(window_);}
+  return 0;
+ }
 
  HWND control(const wchar_t* cls,const wchar_t* text,DWORD style,int id){return CreateWindowExW(0,cls,text,WS_CHILD|WS_VISIBLE|style,0,0,10,10,window_,reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),instance_,nullptr);}
  void create_controls(){

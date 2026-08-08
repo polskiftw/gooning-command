@@ -34,6 +34,7 @@ struct Evidence {
     int pdq_quality{};
     std::vector<std::uint64_t> crop_hashes;
     std::vector<Hash256> video_hashes;
+    std::vector<int> video_qualities;
     int width{};
     int height{};
     double duration_seconds{};

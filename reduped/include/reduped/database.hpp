@@ -52,6 +52,8 @@ public:
                                          std::string_view hash_version) const;
     std::vector<Evidence> current_evidence(std::string_view hash_version) const;
     void save_evidence(const Evidence& evidence);
+    void save_vpdq_qualities(const Evidence& evidence);
+    void hydrate_vpdq_qualities(std::span<Evidence> evidence, std::string_view hash_version) const;
 
     std::string create_staging(const GenerationIdentity& identity);
     void save_staging_result(std::string_view generation_id,

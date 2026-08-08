@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace reduped {

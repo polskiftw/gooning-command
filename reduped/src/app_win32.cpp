@@ -5,6 +5,7 @@
 #include "reduped/deletion.hpp"
 #include "reduped/evidence_windows.hpp"
 #include "reduped/pipeline.hpp"
+#include "reduped/preview_cache.hpp"
 #include "reduped/preview_windows.hpp"
 #include "reduped/r2_winhttp.hpp"
 
@@ -36,14 +37,14 @@ std::string narrow(std::wstring_view text){if(text.empty())return {};const int s
 
 std::filesystem::path executable_directory(){std::wstring path(32768,L'\0');const auto length=GetModuleFileNameW(nullptr,path.data(),static_cast<DWORD>(path.size()));path.resize(length);return std::filesystem::path(path).parent_path();}
 
-struct PreviewJob{int side{};std::uint64_t revision{};std::string key;MediaKind kind{MediaKind::unknown};};
+struct PreviewJob{int side{};std::uint64_t revision{};ObjectRecord object;};
 struct PreviewResult{int side{};std::uint64_t revision{};std::string key;PreviewFrames preview;std::string error;};
 struct ActionResult{bool success{};std::string error;};
 
 class App{
 public:
  App(HINSTANCE instance,int show):instance_(instance),show_(show){
-  const auto directory=executable_directory();config_=Config::load(directory/L"config.txt");std::filesystem::create_directories(directory/L"data");database_=std::make_unique<Database>(directory/L"data"/L"deduper.sqlite3");store_=std::make_unique<WinHttpObjectStore>(config_);
+  const auto directory=executable_directory();config_=Config::load(directory/L"config.txt");std::filesystem::create_directories(directory/L"data");database_=std::make_unique<Database>(directory/L"data"/L"deduper.sqlite3");store_=std::make_unique<WinHttpObjectStore>(config_);preview_cache_=std::make_unique<PreviewCache>(directory/L"data"/L"preview-cache",config_.preview_cache_mb);
  }
  ~App(){shutdown_workers();}
  int run(){
@@ -102,10 +103,10 @@ private:
  void render_pair(){
   ++preview_revision_;clear_previews();const auto pair=current_pair();if(!pair){SetWindowTextW(pair_label_,generation_?L"Certified queue is empty":L"No certified queue exists yet");SetWindowTextW(left_link_,L"");SetWindowTextW(right_link_,L"");update_actionability();return;}
   SetWindowTextW(left_link_,wide(pair->left_key).c_str());SetWindowTextW(right_link_,wide(pair->right_key).c_str());const auto label=std::to_wstring(pair_index_+1)+L" / "+std::to_wstring(generation_->pairs.size())+L"    Difference "+std::to_wstring(pair->difference).substr(0,5)+(pair->excluded?L"    EXCLUDED":L"");SetWindowTextW(pair_label_,label.c_str());
-  enqueue_preview({0,preview_revision_,pair->left_key,kind_for_key(pair->left_key)});enqueue_preview({1,preview_revision_,pair->right_key,kind_for_key(pair->right_key)});database_->save_review_position(generation_->id,pair_index_);update_actionability();
+  enqueue_preview({0,preview_revision_,object_for_key(pair->left_key)});enqueue_preview({1,preview_revision_,object_for_key(pair->right_key)});database_->save_review_position(generation_->id,pair_index_);update_actionability();
  }
 
- MediaKind kind_for_key(const std::string& key)const{auto objects=database_->live_assets();auto found=std::find_if(objects.begin(),objects.end(),[&](const auto& o){return o.key==key;});return found==objects.end()?MediaKind::unknown:found->media_kind;}
+ ObjectRecord object_for_key(const std::string& key)const{auto objects=database_->live_assets();auto found=std::find_if(objects.begin(),objects.end(),[&](const auto& o){return o.key==key;});return found==objects.end()?ObjectRecord{key,0,"","",MediaKind::unknown}:*found;}
 
  void navigate(int delta){if(!generation_||generation_->pairs.empty())return;const auto count=static_cast<long long>(generation_->pairs.size());pair_index_=static_cast<std::size_t>((static_cast<long long>(pair_index_)+delta+count)%count);render_pair();}
 
@@ -119,7 +120,7 @@ private:
 
  void open_media(bool left){const auto pair=current_pair();if(!pair)return;if(config_.public_media_base.empty()){set_status("PUBLIC_MEDIA_BASE is not configured");return;}const auto key=left?pair->left_key:pair->right_key;std::wstring raw=wide(config_.public_media_base);if(!raw.empty()&&raw.back()!=L'/')raw+=L'/';raw+=wide(key);std::wstring escaped(raw.size()*3+16,L'\0');DWORD length=static_cast<DWORD>(escaped.size());if(SUCCEEDED(UrlEscapeW(raw.c_str(),escaped.data(),&length,URL_ESCAPE_PERCENT|URL_ESCAPE_SEGMENT_ONLY))){escaped.resize(length);ShellExecuteW(window_,L"open",escaped.c_str(),nullptr,nullptr,SW_SHOWNORMAL);}else ShellExecuteW(window_,L"open",raw.c_str(),nullptr,nullptr,SW_SHOWNORMAL);}
 
- void start_preview_workers(){for(auto& worker:preview_workers_)worker=std::thread([this]{const auto initialized=CoInitializeEx(nullptr,COINIT_MULTITHREADED);while(true){PreviewJob job;{std::unique_lock lock(preview_mutex_);preview_condition_.wait(lock,[&]{return closing_.load()||preview_jobs_[0]||preview_jobs_[1];});if(closing_.load())break;const int side=preview_jobs_[0]?0:1;job=std::move(*preview_jobs_[side]);preview_jobs_[side].reset();}auto* result=new PreviewResult;result->side=job.side;result->revision=job.revision;result->key=job.key;try{auto bytes=store_->download(job.key,cancelled_);result->preview=prepare_preview(bytes,job.key,job.kind,620,560);}catch(const std::exception& e){result->error=e.what();}if(!closing_.load())PostMessageW(window_,message_preview,0,reinterpret_cast<LPARAM>(result));else delete result;}if(SUCCEEDED(initialized))CoUninitialize();});}
+ void start_preview_workers(){for(auto& worker:preview_workers_)worker=std::thread([this]{const auto initialized=CoInitializeEx(nullptr,COINIT_MULTITHREADED);while(true){PreviewJob job;{std::unique_lock lock(preview_mutex_);preview_condition_.wait(lock,[&]{return closing_.load()||preview_jobs_[0]||preview_jobs_[1];});if(closing_.load())break;const int side=preview_jobs_[0]?0:1;job=std::move(*preview_jobs_[side]);preview_jobs_[side].reset();}auto* result=new PreviewResult;result->side=job.side;result->revision=job.revision;result->key=job.object.key;try{auto bytes=preview_cache_->load(job.object,[&]{return store_->download(job.object.key,cancelled_);});result->preview=prepare_preview(bytes,job.object.key,job.object.media_kind,620,560);}catch(const std::exception& e){result->error=e.what();}if(!closing_.load())PostMessageW(window_,message_preview,0,reinterpret_cast<LPARAM>(result));else delete result;}if(SUCCEEDED(initialized))CoUninitialize();});}
  void enqueue_preview(PreviewJob job){{std::lock_guard lock(preview_mutex_);preview_jobs_[job.side]=std::move(job);}preview_condition_.notify_one();}
 
  void animate(){const auto now=GetTickCount64();for(int side=0;side<2;++side){auto& preview=displayed_[side];if(preview.frames.size()<2||now<next_frame_at_[side])continue;frame_index_[side]=(frame_index_[side]+1)%preview.frames.size();SendMessageW(side==0?left_preview_:right_preview_,STM_SETIMAGE,IMAGE_BITMAP,reinterpret_cast<LPARAM>(preview.frames[frame_index_[side]]));next_frame_at_[side]=now+preview.delays_ms[frame_index_[side]];}}
@@ -143,7 +144,7 @@ private:
  }
 
  HINSTANCE instance_{};int show_{};HWND window_{},previous_{},next_{},exclude_{},nuke_{},nuke_sha_{},slider_{},pair_label_{},status_{},left_preview_{},right_preview_{},left_link_{},right_link_{},left_delete_{},right_delete_{};
- Config config_;std::unique_ptr<Database> database_;std::unique_ptr<WinHttpObjectStore> store_;std::optional<GenerationSnapshot> generation_;std::size_t pair_index_{};bool validated_{},validation_failed_{};std::atomic_bool busy_{false},cancelled_{false},closing_{false};std::thread startup_,action_;std::uint64_t preview_revision_{};
+ Config config_;std::unique_ptr<Database> database_;std::unique_ptr<WinHttpObjectStore> store_;std::unique_ptr<PreviewCache> preview_cache_;std::optional<GenerationSnapshot> generation_;std::size_t pair_index_{};bool validated_{},validation_failed_{};std::atomic_bool busy_{false},cancelled_{false},closing_{false};std::thread startup_,action_;std::uint64_t preview_revision_{};
  std::array<std::thread,2> preview_workers_;std::mutex preview_mutex_;std::condition_variable preview_condition_;std::array<std::optional<PreviewJob>,2> preview_jobs_;std::array<PreviewFrames,2> displayed_;std::array<std::size_t,2> frame_index_{};std::array<ULONGLONG,2> next_frame_at_{};
 };
 

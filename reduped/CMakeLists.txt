@@ -44,6 +44,7 @@ if(WIN32)
         reduped_core
         nlohmann_json::nlohmann_json
         bcrypt
+        comctl32
         crypt32
         d2d1
         dwrite

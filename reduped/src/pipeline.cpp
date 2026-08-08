@@ -27,18 +27,23 @@ StartupOutcome CertificationPipeline::run(std::atomic_bool& cancelled,const Stat
     const GenerationIdentity identity{fingerprint,config_.slider,versions_.matcher,versions_.hash,versions_.workflow};
     if(database_.identity_matches(identity)){status("Saved queue valid. Certified queue ready.");return StartupOutcome::validated_existing;}
 
-    status("R2 changed. Reconciling inventory.");
+    status("R2 changed or matcher version changed. Reconciling inventory.");
     database_.reconcile_inventory(inventory);
     std::vector<ObjectRecord> needs_hash;
     for(const auto& object:inventory)if(!database_.evidence_for(object.key,object_version(object),versions_.hash))needs_hash.push_back(object);
-    if(!needs_hash.empty())status("Hashing new/changed objects.");
+    if(!needs_hash.empty())status("Hashing new/changed objects with pHash, PDQ, crop-resistant hashing, and vPDQ.");
     std::atomic_size_t next{0};std::mutex error_mutex;std::exception_ptr first_error;
     const auto worker_count=std::min<std::size_t>(config_.hash_workers,std::max<std::size_t>(1,needs_hash.size()));
     std::vector<std::thread> workers;
     for(std::size_t w=0;w<worker_count;++w)workers.emplace_back([&]{
         while(!cancelled.load()){
             const auto i=next.fetch_add(1);if(i>=needs_hash.size())break;
-            try{auto bytes=store_.download(needs_hash[i].key,cancelled);if(cancelled.load())break;auto evidence=generator_.generate(needs_hash[i],bytes,config_.video_sample_seconds,config_.max_video_frames,cancelled);evidence.object_version=object_version(needs_hash[i]);evidence.hash_version=versions_.hash;database_.save_evidence(evidence);}
+            try{
+                auto bytes=store_.download(needs_hash[i].key,cancelled);if(cancelled.load())break;
+                auto evidence=generator_.generate(needs_hash[i],bytes,config_.video_sample_seconds,config_.max_video_frames,cancelled);
+                evidence.object_version=object_version(needs_hash[i]);evidence.hash_version=versions_.hash;
+                database_.save_evidence(evidence);database_.save_vpdq_qualities(evidence);
+            }
             catch(...){std::lock_guard guard(error_mutex);if(!first_error)first_error=std::current_exception();cancelled.store(true);break;}
         }
     });
@@ -46,10 +51,10 @@ StartupOutcome CertificationPipeline::run(std::atomic_bool& cancelled,const Stat
     if(first_error){try{std::rethrow_exception(first_error);}catch(const std::exception& e){status(std::string("Hashing failed: ")+e.what());}return StartupOutcome::validation_failed;}
     if(cancelled.load())return StartupOutcome::cancelled;
 
-    status("Building staging certification.");
+    status("Building staging certification with all four matching algorithms.");
     const auto generation_id=database_.create_staging(identity);
     try{
-        auto current=database_.current_evidence(versions_.hash);
+        auto current=database_.current_evidence(versions_.hash);database_.hydrate_vpdq_qualities(current,versions_.hash);
         auto edges=match_all(current,config_.slider,config_.compare_workers,&cancelled);
         if(cancelled.load())return StartupOutcome::cancelled;
         auto result=construct_generation(database_.live_assets(),current,edges,config_.survivor_policy,generation_id);
@@ -65,7 +70,7 @@ void CertificationPipeline::recertify_pending(std::atomic_bool& cancelled,const 
         if(!database_.claim_recertification(job.id))continue;
         status("Family recertification running. Protected partner remains safe in R2 and hidden from review.");
         try{
-            const auto all_objects=database_.live_assets();const auto all_evidence=database_.current_evidence(versions_.hash);
+            const auto all_objects=database_.live_assets();auto all_evidence=database_.current_evidence(versions_.hash);database_.hydrate_vpdq_qualities(all_evidence,versions_.hash);
             std::unordered_map<std::string,ObjectRecord> objects;for(const auto& object:all_objects)objects[object.key]=object;
             std::unordered_map<std::string,Evidence> evidence;for(const auto& item:all_evidence)evidence[item.key]=item;
             std::vector<ObjectRecord> selected_objects;std::vector<Evidence> selected_evidence;

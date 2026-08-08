@@ -1,0 +1,20 @@
+# Copy this file to config.txt beside the application.
+# All service-specific values are intentionally blank.
+ENDPOINT=
+REGION=auto
+BUCKET=
+PREFIX=
+INDEX_KEY=
+ACCESS_KEY_ID=
+SECRET_ACCESS_KEY=
+PUBLIC_MEDIA_BASE=
+
+# Destructive operations are disabled until this is changed deliberately.
+ALLOW_DELETE=NO
+SLIDER=50
+SURVIVOR_POLICY=resolution
+VIDEO_SAMPLE_SECONDS=1
+MAX_VIDEO_FRAMES=300
+PREVIEW_CACHE_MB=5000
+HASH_WORKERS=8
+COMPARE_WORKERS=0

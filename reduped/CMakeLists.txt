@@ -14,8 +14,10 @@ find_package(SQLite3 REQUIRED)
 add_library(reduped_core STATIC
     src/config.cpp
     src/database.cpp
+    src/database_vpdq.cpp
     src/fingerprint.cpp
     src/matcher.cpp
+    src/algorithms.cpp
     src/generation.cpp
     src/deletion.cpp
     src/pipeline.cpp
